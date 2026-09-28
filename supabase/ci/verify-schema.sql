@@ -75,6 +75,16 @@ BEGIN
       'messages.error_code/error_title/error_details are missing — migration 042 did not apply';
   END IF;
 
+  -- The stage_type column (043) on pipeline_stages.
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'pipeline_stages'
+      AND column_name = 'stage_type'
+  ) THEN
+    RAISE EXCEPTION
+      'pipeline_stages.stage_type is missing — migration 043 did not apply';
+  END IF;
+
   RAISE NOTICE 'schema verification passed';
 END
 $$;
