@@ -61,7 +61,11 @@ export async function loadMetrics(db: DB): Promise<MetricsBundle> {
       .select('id', { count: 'exact', head: true })
       .gte('created_at', yesterdayStart)
       .lt('created_at', todayStart),
-    db.from('deals').select('value, status').eq('status', 'open'),
+    db
+      .from('deals')
+      .select('value, status, pipeline_stages!inner(stage_type)')
+      .eq('status', 'open')
+      .eq('pipeline_stages.stage_type', 'active'),
     db
       .from('messages')
       .select('id', { count: 'exact', head: true })
@@ -75,7 +79,7 @@ export async function loadMetrics(db: DB): Promise<MetricsBundle> {
       .lt('created_at', todayStart),
   ])
 
-  const openDealsRows = (openDeals.data ?? []) as { value: number | null }[]
+  const openDealsRows = (openDeals.data ?? []) as unknown as { value: number | null }[]
   const openDealsValue = openDealsRows.reduce((sum, d) => sum + (d.value ?? 0), 0)
 
   return {
