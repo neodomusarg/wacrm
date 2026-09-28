@@ -1,5 +1,6 @@
 import type { AccountRole } from "@/lib/auth/roles";
 import type { InteractiveMessagePayload } from "@/lib/whatsapp/interactive";
+import type { Segment, LeadSource, LostReason } from "@/lib/neodomus";
 
 export type {
   InteractiveMessagePayload,
@@ -374,12 +375,15 @@ export interface Pipeline {
   created_at: string;
 }
 
+export type StageType = 'active' | 'paused' | 'won' | 'lost';
+
 export interface PipelineStage {
   id: string;
   pipeline_id: string;
   name: string;
   position: number;
   color: string;
+  stage_type?: StageType;
   created_at: string;
 }
 
@@ -403,6 +407,14 @@ export interface Deal {
   notes?: string;
   expected_close_date?: string;
   status?: DealStatus;
+  segment?: Segment | null;
+  lead_source?: LeadSource | null;
+  project_name?: string | null;
+  build_stage?: string | null;
+  units?: number | null;
+  square_meters?: number | null;
+  lost_reason?: LostReason | null;
+  recontact_date?: string | null;
   created_at: string;
   updated_at?: string;
   contact?: Contact;
