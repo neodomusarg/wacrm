@@ -9,10 +9,22 @@ import type {
   Contact,
   Conversation,
   Deal,
-  DealStatus,
   PipelineStage,
   Profile,
 } from "@/types";
+import {
+  B2B_SEGMENTS,
+  B2C_SEGMENTS,
+  BUILD_STAGES,
+  LEAD_SOURCES,
+  LOST_REASONS,
+  isB2B,
+  stageTypeOf,
+  type BuildStage,
+  type LeadSource,
+  type LostReason,
+  type Segment,
+} from "@/lib/neodomus";
 import {
   Sheet,
   SheetContent,
@@ -29,7 +41,6 @@ import {
   Trash2,
   MessageSquare,
   DollarSign,
-  Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslations } from "next-intl";
@@ -61,9 +72,18 @@ export function DealForm({
   const [value, setValue] = useState("");
   const [currency, setCurrency] = useState(defaultCurrency);
   const [contactId, setContactId] = useState("");
+  const [company, setCompany] = useState("");
+  const [segment, setSegment] = useState<Segment | "">("");
+  const [leadSource, setLeadSource] = useState<LeadSource | "">("");
+  const [projectName, setProjectName] = useState("");
+  const [buildStage, setBuildStage] = useState<BuildStage | "">("");
+  const [units, setUnits] = useState("");
+  const [squareMeters, setSquareMeters] = useState("");
   const [stageId, setStageId] = useState("");
   const [assignedTo, setAssignedTo] = useState("");
   const [expectedCloseDate, setExpectedCloseDate] = useState("");
+  const [lostReason, setLostReason] = useState<LostReason | "">("");
+  const [recontactDate, setRecontactDate] = useState("");
   const [notes, setNotes] = useState("");
 
   const [contacts, setContacts] = useState<Contact[]>([]);
@@ -72,7 +92,6 @@ export function DealForm({
     useState<Conversation | null>(null);
 
   const [saving, setSaving] = useState(false);
-  const [statusAction, setStatusAction] = useState<DealStatus | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
@@ -87,21 +106,37 @@ export function DealForm({
       setTitle(deal.title);
       setValue(String(deal.value ?? ""));
       setCurrency(deal.currency || defaultCurrency);
-      // contact_id is nullable when the contact has been deleted
-      // (migration 004: ON DELETE SET NULL). "" means "no selection".
       setContactId(deal.contact_id ?? "");
+      setCompany(deal.contact?.company ?? "");
+      setSegment(deal.segment ?? "");
+      setLeadSource(deal.lead_source ?? "");
+      setProjectName(deal.project_name ?? "");
+      setBuildStage((deal.build_stage as BuildStage) ?? "");
+      setUnits(deal.units != null ? String(deal.units) : "");
+      setSquareMeters(deal.square_meters != null ? String(deal.square_meters) : "");
       setStageId(deal.stage_id);
       setAssignedTo(deal.assigned_to ?? "");
       setExpectedCloseDate(deal.expected_close_date ?? "");
+      setLostReason(deal.lost_reason ?? "");
+      setRecontactDate(deal.recontact_date ?? "");
       setNotes(deal.notes ?? "");
     } else {
       setTitle("");
       setValue("");
       setCurrency(defaultCurrency);
       setContactId("");
+      setCompany("");
+      setSegment("");
+      setLeadSource("");
+      setProjectName("");
+      setBuildStage("");
+      setUnits("");
+      setSquareMeters("");
       setStageId(defaultStageId || stages[0]?.id || "");
       setAssignedTo("");
       setExpectedCloseDate("");
+      setLostReason("");
+      setRecontactDate("");
       setNotes("");
     }
   }, [open, deal, defaultStageId, stages, defaultCurrency]);
@@ -126,8 +161,6 @@ export function DealForm({
   }, [open, supabase]);
 
   // Fetch linked conversation for the selected contact (newest open one).
-  // Clearing on no-selection is sync with prop state; the populated
-  // case runs setLinkedConversation inside the async fetch callback.
   useEffect(() => {
     if (!open || !contactId) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -151,12 +184,47 @@ export function DealForm({
     };
   }, [open, contactId, supabase]);
 
+  const selectedStage = stages.find((s) => s.id === stageId);
+  const currentStageType = stageTypeOf(selectedStage);
+  const isB2BClient = isB2B(segment);
+
+  const isSaveDisabled =
+    saving ||
+    !title.trim() ||
+    !contactId ||
+    !stageId ||
+    !segment ||
+    (isB2BClient && !company.trim()) ||
+    (currentStageType === "lost" && !lostReason) ||
+    (currentStageType === "paused" && !recontactDate);
+
   async function handleSave() {
     if (!title.trim() || !contactId || !stageId) {
       toast.error(t("toastRequired"));
       return;
     }
+    if (!segment) {
+      toast.error(t("toastSegmentRequired"));
+      return;
+    }
+    if (isB2BClient && !company.trim()) {
+      toast.error(t("toastCompanyRequiredForB2B"));
+      return;
+    }
+    if (currentStageType === "lost" && !lostReason) {
+      toast.error(t("toastLostReasonRequired"));
+      return;
+    }
+    if (currentStageType === "paused" && !recontactDate) {
+      toast.error(t("toastRecontactDateRequired"));
+      return;
+    }
+
     setSaving(true);
+
+    const b2b = isB2BClient;
+    const parsedUnits = units.trim() !== "" ? Math.max(0, parseInt(units, 10)) : null;
+    const parsedSqm = squareMeters.trim() !== "" ? Math.max(0, parseFloat(squareMeters)) : null;
 
     const payload = {
       title: title.trim(),
@@ -168,6 +236,14 @@ export function DealForm({
       assigned_to: assignedTo || null,
       notes: notes.trim() || null,
       expected_close_date: expectedCloseDate || null,
+      segment: segment || null,
+      lead_source: leadSource || null,
+      project_name: b2b && projectName.trim() ? projectName.trim() : null,
+      build_stage: b2b && buildStage ? buildStage : null,
+      units: b2b && parsedUnits !== null && !isNaN(parsedUnits) ? parsedUnits : null,
+      square_meters: b2b && parsedSqm !== null && !isNaN(parsedSqm) ? parsedSqm : null,
+      lost_reason: currentStageType === "lost" && lostReason ? lostReason : null,
+      recontact_date: recontactDate || null,
     };
 
     if (deal) {
@@ -197,7 +273,7 @@ export function DealForm({
       }
       const { error } = await supabase
         .from("deals")
-        .insert({ ...payload, user_id: user.id, account_id: accountId, status: "open" });
+        .insert({ ...payload, user_id: user.id, account_id: accountId });
       if (error) {
         toast.error(t("toastFailedCreate"));
         setSaving(false);
@@ -205,27 +281,22 @@ export function DealForm({
       }
     }
 
+    // Sync company to contact if changed
+    const currentContact = contacts.find((c) => c.id === contactId);
+    const originalCompany = currentContact?.company ?? "";
+    const trimmedCompany = company.trim();
+    if (trimmedCompany !== originalCompany) {
+      const { error: companyError } = await supabase
+        .from("contacts")
+        .update({ company: trimmedCompany || null })
+        .eq("id", contactId);
+      if (companyError) {
+        toast.warning(t("toastCompanyUpdateWarning"));
+      }
+    }
+
     setSaving(false);
     toast.success(deal ? t("toastUpdated") : t("toastCreated"));
-    onOpenChange(false);
-    onSaved();
-  }
-
-  async function handleStatusChange(status: DealStatus) {
-    if (!deal) return;
-    setStatusAction(status);
-    const { error } = await supabase
-      .from("deals")
-      .update({ status })
-      .eq("id", deal.id);
-    setStatusAction(null);
-    if (error) {
-      toast.error(t("toastFailedStatus"));
-      return;
-    }
-    toast.success(
-      status === "won" ? t("toastMarkedWon") : status === "lost" ? t("toastMarkedLost") : t("toastReopened"),
-    );
     onOpenChange(false);
     onSaved();
   }
@@ -245,6 +316,9 @@ export function DealForm({
     onSaved();
   }
 
+  const wonStage = stages.find((s) => stageTypeOf(s) === "won");
+  const lostStage = stages.find((s) => stageTypeOf(s) === "lost");
+
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
@@ -259,6 +333,7 @@ export function DealForm({
           </SheetHeader>
 
           <div className="flex-1 overflow-y-auto p-4 space-y-4">
+            {/* 1. Title */}
             <div className="grid gap-2">
               <Label className="text-muted-foreground">{t("title")}</Label>
               <Input
@@ -269,11 +344,19 @@ export function DealForm({
               />
             </div>
 
+            {/* 2. Contact + Company */}
             <div className="grid gap-2">
               <Label className="text-muted-foreground">{t("contact")}</Label>
               <select
                 value={contactId}
-                onChange={(e) => setContactId(e.target.value)}
+                onChange={(e) => {
+                  const nextId = e.target.value;
+                  setContactId(nextId);
+                  const sel = contacts.find((c) => c.id === nextId);
+                  if (sel) {
+                    setCompany(sel.company ?? "");
+                  }
+                }}
                 className="h-9 w-full rounded-lg border border-border bg-muted px-2.5 text-sm text-foreground outline-none focus:border-primary focus:ring-1 focus:ring-primary"
               >
                 <option value="">{t("selectContact")}</option>
@@ -295,6 +378,121 @@ export function DealForm({
               )}
             </div>
 
+            <div className="grid gap-2">
+              <Label className="text-muted-foreground">{t("company")}</Label>
+              <Input
+                value={company}
+                onChange={(e) => setCompany(e.target.value)}
+                placeholder={t("companyPlaceholder")}
+                className="border-border bg-muted text-foreground"
+              />
+            </div>
+
+            {/* 3. Segment + Lead Source */}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="grid gap-2">
+                <Label className="text-muted-foreground">{t("segment")} *</Label>
+                <select
+                  value={segment}
+                  onChange={(e) => setSegment(e.target.value as Segment)}
+                  className="h-9 w-full rounded-lg border border-border bg-muted px-2.5 text-sm text-foreground outline-none focus:border-primary"
+                >
+                  <option value="">{t("selectSegment")}</option>
+                  <optgroup label="B2B">
+                    {B2B_SEGMENTS.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </optgroup>
+                  <optgroup label="B2C">
+                    {B2C_SEGMENTS.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </optgroup>
+                </select>
+              </div>
+              <div className="grid gap-2">
+                <Label className="text-muted-foreground">{t("leadSource")}</Label>
+                <select
+                  value={leadSource}
+                  onChange={(e) => setLeadSource(e.target.value as LeadSource)}
+                  className="h-9 w-full rounded-lg border border-border bg-muted px-2.5 text-sm text-foreground outline-none focus:border-primary"
+                >
+                  <option value="">{t("selectLeadSource")}</option>
+                  {LEAD_SOURCES.map((ls) => (
+                    <option key={ls} value={ls}>
+                      {ls}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* 4. Construction section if B2B */}
+            {isB2BClient && (
+              <div className="space-y-3 rounded-lg border border-border bg-muted/30 p-3">
+                <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  {t("buildSection")}
+                </p>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="grid gap-2">
+                    <Label className="text-muted-foreground">{t("projectName")}</Label>
+                    <Input
+                      value={projectName}
+                      onChange={(e) => setProjectName(e.target.value)}
+                      placeholder={t("projectNamePlaceholder")}
+                      className="border-border bg-muted text-foreground"
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label className="text-muted-foreground">{t("buildStage")}</Label>
+                    <select
+                      value={buildStage}
+                      onChange={(e) => setBuildStage(e.target.value as BuildStage)}
+                      className="h-9 w-full rounded-lg border border-border bg-muted px-2.5 text-sm text-foreground outline-none focus:border-primary"
+                    >
+                      <option value="">{t("selectBuildStage")}</option>
+                      {BUILD_STAGES.map((bs) => (
+                        <option key={bs} value={bs}>
+                          {bs}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="grid gap-2">
+                    <Label className="text-muted-foreground">{t("units")}</Label>
+                    <Input
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={units}
+                      onChange={(e) => setUnits(e.target.value)}
+                      placeholder="0"
+                      className="border-border bg-muted text-foreground"
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label className="text-muted-foreground">{t("squareMeters")}</Label>
+                    <Input
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={squareMeters}
+                      onChange={(e) => setSquareMeters(e.target.value)}
+                      placeholder="0"
+                      className="border-border bg-muted text-foreground"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* 5. Value + Currency, Close Date, Stage, Assigned To */}
             <div className="grid grid-cols-[1fr_110px] gap-3">
               <div className="grid gap-2">
                 <Label className="text-muted-foreground">{t("value")}</Label>
@@ -366,6 +564,50 @@ export function DealForm({
               </select>
             </div>
 
+            {/* 6. Conditionals by stage type */}
+            {currentStageType === "lost" && (
+              <div className="grid gap-2">
+                <Label className="text-muted-foreground">{t("lostReason")} *</Label>
+                <select
+                  value={lostReason}
+                  onChange={(e) => setLostReason(e.target.value as LostReason)}
+                  className="h-9 w-full rounded-lg border border-border bg-muted px-2.5 text-sm text-foreground outline-none focus:border-primary"
+                >
+                  <option value="">{t("selectLostReason")}</option>
+                  {LOST_REASONS.map((r) => (
+                    <option key={r} value={r}>
+                      {r}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {currentStageType === "paused" && (
+              <div className="grid gap-2">
+                <Label className="text-muted-foreground">{t("recontactDate")} *</Label>
+                <Input
+                  type="date"
+                  value={recontactDate}
+                  onChange={(e) => setRecontactDate(e.target.value)}
+                  className="border-border bg-muted text-foreground"
+                />
+              </div>
+            )}
+
+            {currentStageType !== "lost" && currentStageType !== "paused" && (
+              <div className="grid gap-2">
+                <Label className="text-muted-foreground">{t("nextFollowUp")}</Label>
+                <Input
+                  type="date"
+                  value={recontactDate}
+                  onChange={(e) => setRecontactDate(e.target.value)}
+                  className="border-border bg-muted text-foreground"
+                />
+              </div>
+            )}
+
+            {/* 7. Notes */}
             <div className="grid gap-2">
               <Label className="text-muted-foreground">{t("notes")}</Label>
               <Textarea
@@ -376,54 +618,36 @@ export function DealForm({
               />
             </div>
 
-            {deal && (
+            {/* Status section (quick move to won/lost stage) */}
+            {deal && (wonStage || lostStage) && (
               <div className="space-y-2 rounded-lg border border-border bg-muted/50 p-3">
                 <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                   {t("status")}
                 </p>
                 <div className="flex gap-2">
-                  <Button
-                    type="button"
-                    onClick={() => handleStatusChange("won")}
-                    disabled={!!statusAction || deal.status === "won"}
-                    className="flex-1 bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-                  >
-                    {statusAction === "won" ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <>
-                        <Check className="mr-1 h-4 w-4" />
-                        {t("markAsWon")}
-                      </>
-                    )}
-                  </Button>
-                  <Button
-                    type="button"
-                    onClick={() => handleStatusChange("lost")}
-                    disabled={!!statusAction || deal.status === "lost"}
-                    className="flex-1 bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
-                  >
-                    {statusAction === "lost" ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <>
-                        <X className="mr-1 h-4 w-4" />
-                        {t("markAsLost")}
-                      </>
-                    )}
-                  </Button>
+                  {wonStage && (
+                    <Button
+                      type="button"
+                      onClick={() => setStageId(wonStage.id)}
+                      disabled={stageId === wonStage.id}
+                      className="flex-1 bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                    >
+                      <Check className="mr-1 h-4 w-4" />
+                      {t("markAsWon")}
+                    </Button>
+                  )}
+                  {lostStage && (
+                    <Button
+                      type="button"
+                      onClick={() => setStageId(lostStage.id)}
+                      disabled={stageId === lostStage.id}
+                      className="flex-1 bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
+                    >
+                      <X className="mr-1 h-4 w-4" />
+                      {t("markAsLost")}
+                    </Button>
+                  )}
                 </div>
-                {deal.status && deal.status !== "open" && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    onClick={() => handleStatusChange("open")}
-                    disabled={!!statusAction}
-                    className="w-full text-muted-foreground hover:text-foreground"
-                  >
-                    {t("reopenDeal")}
-                  </Button>
-                )}
               </div>
             )}
           </div>
@@ -439,7 +663,7 @@ export function DealForm({
               </Button>
               <Button
                 onClick={handleSave}
-                disabled={saving || !title.trim() || !contactId || !stageId}
+                disabled={isSaveDisabled}
                 className="flex-1 bg-primary text-primary-foreground hover:bg-primary/90"
               >
                 {saving ? t("saving") : deal ? t("saveChanges") : t("createDeal")}

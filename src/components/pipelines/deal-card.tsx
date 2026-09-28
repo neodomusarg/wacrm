@@ -3,6 +3,7 @@
 import type { Deal, PipelineStage } from "@/types";
 import { Calendar, Check, X } from "lucide-react";
 import { formatCurrency } from "@/lib/currency";
+import { isB2B, recontactStatus } from "@/lib/neodomus";
 import { useTranslations } from "next-intl";
 
 interface DealCardProps {
@@ -13,7 +14,9 @@ interface DealCardProps {
 }
 
 function formatDate(dateStr: string) {
-  return new Date(dateStr).toLocaleDateString("en-US", {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const date = y && m && d ? new Date(y, m - 1, d) : new Date(dateStr);
+  return date.toLocaleDateString("es-AR", {
     month: "short",
     day: "numeric",
     year: "numeric",
@@ -67,29 +70,74 @@ export function DealCard({ deal, stage, onEdit, isOverlay }: DealCardProps) {
         {deal.status === "lost" && (
           <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-red-500/15 px-2 py-0.5 text-[10px] font-semibold text-red-400">
             <X className="h-3 w-3" />
-            {t("lost")}
+            <span>
+              {t("lost")}
+              {deal.lost_reason ? ` • ${deal.lost_reason}` : ""}
+            </span>
           </span>
         )}
       </div>
 
       {/* Contact row */}
       <div className="mt-2 flex items-center gap-2">
-        <span className="flex h-5 w-5 items-center justify-center rounded-full bg-muted text-[10px] font-semibold text-foreground">
+        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-muted text-[10px] font-semibold text-foreground">
           {initials(deal.contact?.name, deal.contact?.phone)}
         </span>
         <span className="truncate text-xs text-muted-foreground">{contactLabel}</span>
       </div>
 
-      <div className="mt-2 flex items-center justify-between">
+      {/* Company and Segment chip */}
+      {(deal.contact?.company || deal.segment) && (
+        <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+          {deal.contact?.company && (
+            <span className="truncate max-w-[150px] font-medium text-foreground/80">
+              {deal.contact.company}
+            </span>
+          )}
+          {deal.segment && (
+            <span className="inline-flex shrink-0 items-center rounded-full bg-muted border border-border/50 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+              {deal.segment}
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* B2B Project Name */}
+      {isB2B(deal.segment) && deal.project_name && (
+        <p className="mt-1 truncate text-xs text-muted-foreground" title={deal.project_name}>
+          {deal.project_name}
+        </p>
+      )}
+
+      <div className="mt-2 flex items-center justify-between gap-2">
         <span className="text-sm font-bold text-primary">
           {formatCurrency(deal.value, deal.currency)}
         </span>
-        {deal.expected_close_date && (
+        {deal.status !== "won" && deal.status !== "lost" && deal.recontact_date ? (
+          (() => {
+            const status = recontactStatus(deal.recontact_date);
+            const colorClass =
+              status === "overdue"
+                ? "text-red-400"
+                : status === "today"
+                  ? "text-amber-400"
+                  : "text-muted-foreground";
+            return (
+              <span
+                className={`flex items-center gap-1 text-[11px] font-medium ${colorClass}`}
+                title={t("recontactDateTooltip")}
+              >
+                <Calendar className="h-3 w-3" />
+                {formatDate(deal.recontact_date)}
+              </span>
+            );
+          })()
+        ) : deal.expected_close_date ? (
           <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
             <Calendar className="h-3 w-3" />
             {formatDate(deal.expected_close_date)}
           </span>
-        )}
+        ) : null}
       </div>
 
       {assigneeLabel && (

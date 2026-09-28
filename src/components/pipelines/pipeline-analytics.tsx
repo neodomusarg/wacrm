@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/tooltip";
 import { useAuth } from "@/hooks/use-auth";
 import { formatCurrency } from "@/lib/currency";
+import { countsTowardActiveValue, stageTypeOf } from "@/lib/neodomus";
 import { useTranslations } from "next-intl";
 
 interface PipelineAnalyticsProps {
@@ -26,28 +27,31 @@ interface PipelineAnalyticsProps {
   deals: Deal[];
 }
 
+type TranslationFn = (key: string, values?: Record<string, string | number>) => string;
+
 /**
  * Weighted pipeline value: value × per-stage probability.
- * First stage ≈ 10%, stages interpolate up to 90% before the final stage,
- * final stage (Won) = 100%. Lost deals excluded.
+ * Only stages with stage_type === 'active' receive non-zero probability.
+ * First active stage ≈ 10%, stages interpolate linearly up to 90% at the last active stage.
+ * If there is only one active stage, returns 50%. Non-active stages return 0.
  */
 function computeStageProbability(
   stage: PipelineStage,
   sortedStages: PipelineStage[],
 ): number {
-  const n = sortedStages.length;
-  if (n <= 1) return 1;
-  const index = sortedStages.findIndex((s) => s.id === stage.id);
+  if (stageTypeOf(stage) !== "active") return 0;
+  const activeStages = sortedStages.filter((s) => stageTypeOf(s) === "active");
+  const n = activeStages.length;
+  if (n === 0) return 0;
+  if (n === 1) return 0.5;
+  const index = activeStages.findIndex((s) => s.id === stage.id);
   if (index < 0) return 0;
-  if (index === n - 1) return 1;
-  const slots = n - 1;
-  if (slots <= 1) return 0.1;
-  const t = index / (slots - 1);
+  const t = index / (n - 1);
   return 0.1 + t * (0.9 - 0.1);
 }
 
 export function PipelineAnalytics({ stages, deals }: PipelineAnalyticsProps) {
-  const t = useTranslations("Pipelines.analytics");
+  const t = useTranslations("Pipelines.analytics") as unknown as TranslationFn;
   const { defaultCurrency } = useAuth();
   const sortedStages = useMemo(
     () => [...stages].sort((a, b) => a.position - b.position),
@@ -55,15 +59,14 @@ export function PipelineAnalytics({ stages, deals }: PipelineAnalyticsProps) {
   );
 
   const stats = useMemo(() => {
-    const active = deals.filter((d) => d.status !== "lost");
-    const openDeals = active.filter((d) => d.status !== "won");
+    const stageById = new Map(sortedStages.map((s) => [s.id, s]));
+    const activeDeals = deals.filter((d) => countsTowardActiveValue(d, stageById));
 
-    const totalCount = active.length;
-    const totalValue = active.reduce((sum, d) => sum + Number(d.value || 0), 0);
+    const totalCount = activeDeals.length;
+    const totalValue = activeDeals.reduce((sum, d) => sum + Number(d.value || 0), 0);
     const avgValue = totalCount > 0 ? totalValue / totalCount : 0;
 
-    const stageById = new Map(sortedStages.map((s) => [s.id, s]));
-    const weightedValue = openDeals.reduce((sum, d) => {
+    const weightedValue = activeDeals.reduce((sum, d) => {
       const stage = stageById.get(d.stage_id);
       if (!stage) return sum;
       const prob = computeStageProbability(stage, sortedStages);
@@ -154,8 +157,7 @@ function Metric({
   label: string;
   value: string;
   tooltip: string;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  t: any;
+  t: TranslationFn;
 }) {
   return (
     <div className="rounded-lg bg-muted/50 p-3">

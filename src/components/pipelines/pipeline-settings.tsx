@@ -17,7 +17,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { createClient } from "@/lib/supabase/client";
-import type { Pipeline, PipelineStage } from "@/types";
+import type { Pipeline, PipelineStage, StageType } from "@/types";
 import {
   Dialog,
   DialogContent,
@@ -36,6 +36,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslations } from "next-intl";
+
+type TranslationFn = (key: string, values?: Record<string, string | number>) => string;
 
 const STAGE_COLORS = [
   "#3b82f6",
@@ -69,7 +71,7 @@ export function PipelineSettings({
   onStagesChanged,
   onCreateNewPipeline,
 }: PipelineSettingsProps) {
-  const t = useTranslations("Pipelines.settings");
+  const t = useTranslations("Pipelines.settings") as unknown as TranslationFn;
   const supabase = createClient();
 
   const [name, setName] = useState(pipeline.name);
@@ -107,15 +109,13 @@ export function PipelineSettings({
   async function handleSave() {
     setSaving(true);
 
-    // One upsert for all stages — batches N stage writes into a single
-    // round-trip. Previous implementation did N sequential UPDATEs which
-    // latency-scaled linearly with stage count.
     const stageRows = localStages.map((s, i) => ({
       id: s.id,
       pipeline_id: s.pipeline_id,
       name: s.name,
       color: s.color,
       position: i,
+      stage_type: s.stage_type ?? "active",
     }));
 
     const [renameRes, stagesRes] = await Promise.all([
@@ -149,6 +149,7 @@ export function PipelineSettings({
         name: trimmed,
         color: newStageColor,
         position: localStages.length,
+        stage_type: "active",
       })
       .select()
       .single();
@@ -198,6 +199,10 @@ export function PipelineSettings({
     onPipelinesChanged();
     toast.success(t("toastDeleted"));
   }
+
+  const wonCount = localStages.filter((s) => (s.stage_type ?? "active") === "won").length;
+  const lostCount = localStages.filter((s) => (s.stage_type ?? "active") === "lost").length;
+  const hasMultipleWonOrLost = wonCount > 1 || lostCount > 1;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -250,6 +255,14 @@ export function PipelineSettings({
 
               <div className="grid gap-2">
                 <Label className="text-muted-foreground">{t("stages")}</Label>
+
+                {hasMultipleWonOrLost && (
+                  <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2.5 text-xs text-amber-400">
+                    <AlertTriangle className="h-4 w-4 shrink-0" />
+                    <span>{t("multipleTerminalStagesWarning")}</span>
+                  </div>
+                )}
+
                 <DndContext
                   sensors={sensors}
                   collisionDetection={closestCenter}
@@ -272,6 +285,11 @@ export function PipelineSettings({
                           onColorChange={(v) => {
                             const updated = [...localStages];
                             updated[index] = { ...updated[index], color: v };
+                            setLocalStages(updated);
+                          }}
+                          onStageTypeChange={(v) => {
+                            const updated = [...localStages];
+                            updated[index] = { ...updated[index], stage_type: v };
                             setLocalStages(updated);
                           }}
                           onRemove={() => handleRemoveStage(stage.id)}
@@ -368,6 +386,7 @@ function SortableStageRow({
   stage,
   onNameChange,
   onColorChange,
+  onStageTypeChange,
   onRemove,
   colors,
   t,
@@ -375,10 +394,10 @@ function SortableStageRow({
   stage: PipelineStage;
   onNameChange: (v: string) => void;
   onColorChange: (v: string) => void;
+  onStageTypeChange: (v: StageType) => void;
   onRemove: () => void;
   colors: string[];
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  t: any;
+  t: TranslationFn;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: stage.id });
@@ -410,6 +429,16 @@ function SortableStageRow({
         onChange={(e) => onNameChange(e.target.value)}
         className="h-7 flex-1 border-transparent bg-transparent text-sm text-foreground focus:border-border"
       />
+      <select
+        value={stage.stage_type ?? "active"}
+        onChange={(e) => onStageTypeChange(e.target.value as StageType)}
+        className="h-7 rounded border border-border bg-background px-1.5 text-xs text-foreground outline-none focus:border-primary"
+      >
+        <option value="active">{t("stageTypeActive")}</option>
+        <option value="paused">{t("stageTypePaused")}</option>
+        <option value="won">{t("stageTypeWon")}</option>
+        <option value="lost">{t("stageTypeLost")}</option>
+      </select>
       <Button
         variant="ghost"
         size="icon-xs"
@@ -431,8 +460,7 @@ function ColorSwatch({
   value: string;
   onChange: (v: string) => void;
   colors: string[];
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  t: any;
+  t: TranslationFn;
 }) {
   const [open, setOpen] = useState(false);
   return (

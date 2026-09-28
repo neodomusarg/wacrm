@@ -30,20 +30,18 @@ import { useCan } from "@/hooks/use-can";
 import { useAuth } from "@/hooks/use-auth";
 import { GatedButton } from "@/components/ui/gated-button";
 import { useTranslations } from "next-intl";
+import {
+  NEODOMUS_DEFAULT_STAGES,
+  NEODOMUS_PIPELINE_NAME,
+  stageTypeOf,
+  statusForStageType,
+} from "@/lib/neodomus";
+import { StageTransitionDialog } from "@/components/pipelines/stage-transition-dialog";
 
 // Pipeline creation is admin-class (settings-tier write under
 // the new RLS); deal creation is operational and only requires
 // agent+. The two CTAs gate on different `useCan` capabilities,
 // not on different copy.
-
-// Spec-defined seed — name and color per the product spec.
-const SPEC_DEFAULT_STAGES = [
-  { name: "New Lead", color: "#3b82f6", position: 0 }, // blue
-  { name: "Qualified", color: "#eab308", position: 1 }, // yellow
-  { name: "Proposal Sent", color: "#f97316", position: 2 }, // orange
-  { name: "Negotiation", color: "#8b5cf6", position: 3 }, // purple
-  { name: "Won", color: "#22c55e", position: 4 }, // green
-];
 
 export default function PipelinesPage() {
   const t = useTranslations("Pipelines.page");
@@ -120,7 +118,7 @@ export default function PipelinesPage() {
 
     const { data: pipeline, error } = await supabase
       .from("pipelines")
-      .insert({ user_id: user.id, account_id: accountId, name: "Sales Pipeline" })
+      .insert({ user_id: user.id, account_id: accountId, name: NEODOMUS_PIPELINE_NAME })
       .select()
       .single();
 
@@ -129,11 +127,12 @@ export default function PipelinesPage() {
       return null;
     }
 
-    const stagesPayload = SPEC_DEFAULT_STAGES.map((s) => ({
+    const stagesPayload = NEODOMUS_DEFAULT_STAGES.map((s) => ({
       pipeline_id: pipeline.id,
       name: s.name,
       color: s.color,
       position: s.position,
+      stage_type: s.stage_type,
     }));
     await supabase.from("pipeline_stages").insert(stagesPayload);
 
@@ -214,22 +213,45 @@ export default function PipelinesPage() {
     setDeals(await loadDeals(selectedPipelineId));
   }, [loadDeals, selectedPipelineId]);
 
-  const handleDealMoved = useCallback(
-    async (dealId: string, newStageId: string) => {
-      // Optimistic update — board already animated; just persist.
+  const [pendingMove, setPendingMove] = useState<{ deal: Deal; stage: PipelineStage } | null>(null);
+
+  const persistMove = useCallback(
+    async (
+      dealId: string,
+      newStageId: string,
+      extra: Partial<Pick<Deal, "lost_reason" | "recontact_date">> = {},
+    ) => {
+      const stage = stages.find((s) => s.id === newStageId);
+      const status = statusForStageType(stageTypeOf(stage));
       setDeals((prev) =>
-        prev.map((d) => (d.id === dealId ? { ...d, stage_id: newStageId } : d)),
+        prev.map((d) => (d.id === dealId ? { ...d, stage_id: newStageId, status, ...extra } : d)),
       );
+      // status lo fija el trigger de la migración 043; no se envía.
       const { error } = await supabase
         .from("deals")
-        .update({ stage_id: newStageId })
+        .update({ stage_id: newStageId, ...extra })
         .eq("id", dealId);
       if (error) {
         toast.error(t("toastFailedMoveDeal"));
         refreshDeals();
       }
     },
-    [supabase, refreshDeals, t],
+    [supabase, stages, refreshDeals, t],
+  );
+
+  const handleDealMoved = useCallback(
+    (dealId: string, newStageId: string) => {
+      const stage = stages.find((s) => s.id === newStageId);
+      const deal = deals.find((d) => d.id === dealId);
+      const type = stageTypeOf(stage);
+      if (stage && deal && (type === "lost" || type === "paused")) {
+        // La tarjeta vuelve a su columna hasta que se confirme el diálogo.
+        setPendingMove({ deal, stage });
+        return;
+      }
+      void persistMove(dealId, newStageId);
+    },
+    [stages, deals, persistMove],
   );
 
   const handleAddDeal = useCallback(
@@ -279,11 +301,12 @@ export default function PipelinesPage() {
       return;
     }
 
-    const stagesPayload = SPEC_DEFAULT_STAGES.map((s) => ({
+    const stagesPayload = NEODOMUS_DEFAULT_STAGES.map((s) => ({
       pipeline_id: pipeline.id,
       name: s.name,
       color: s.color,
       position: s.position,
+      stage_type: s.stage_type,
     }));
     await supabase.from("pipeline_stages").insert(stagesPayload);
 
@@ -488,6 +511,20 @@ export default function PipelinesPage() {
         stages={stages}
         defaultStageId={defaultStageId}
         onSaved={refreshDeals}
+      />
+
+      {/* Stage Transition Dialog (Prompt for lost_reason / recontact_date) */}
+      <StageTransitionDialog
+        open={!!pendingMove}
+        deal={pendingMove?.deal ?? null}
+        stage={pendingMove?.stage ?? null}
+        onCancel={() => setPendingMove(null)}
+        onConfirm={(extra) => {
+          if (!pendingMove) return;
+          const { deal, stage } = pendingMove;
+          setPendingMove(null);
+          void persistMove(deal.id, stage.id, extra);
+        }}
       />
     </div>
   );
