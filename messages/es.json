@@ -546,7 +546,16 @@
       "toastFailedMoveDeal": "Error al mover el negocio",
       "toastFailedCreatePipeline": "Error al crear el pipeline",
       "toastPipelineCreated": "Pipeline creado",
-      "toastNotLinkedToAccount": "Tu perfil no está vinculado a una cuenta."
+      "toastNotLinkedToAccount": "Tu perfil no está vinculado a una cuenta.",
+      "businessLine": {
+        "general": "General",
+        "online": "Ventas online",
+        "projects": "Proyectos B2B"
+      },
+      "businessLineLabel": "Tipo de embudo",
+      "businessLineStagesDesc": "Etapas: {stages}",
+      "setupDualPipelines": "Crear embudos Neo Domus (Online + Proyectos)",
+      "toastDualPipelinesCreated": "Embudos Online y Proyectos creados"
     },
     "transition": {
       "markAsLostTitle": "Marcar como perdido",
@@ -630,7 +639,17 @@
       "toastMarkedLost": "Marcado como perdido",
       "toastReopened": "Negocio reabierto",
       "toastFailedDelete": "Error al eliminar el negocio",
-      "toastDeleted": "Negocio eliminado"
+      "toastDeleted": "Negocio eliminado",
+      "province": "Provincia",
+      "selectProvince": "Elegir provincia",
+      "city": "Ciudad / zona",
+      "cityPlaceholder": "Ej.: Córdoba Capital, Villa Allende",
+      "orderSection": "Pedido online",
+      "orderRef": "N° de pedido",
+      "shippingCarrier": "Transporte",
+      "selectCarrier": "Elegir transporte",
+      "trackingCode": "Código de seguimiento",
+      "installationDate": "Fecha de instalación"
     },
     "settings": {
       "managePipeline": "Administrar pipeline",
@@ -646,7 +665,7 @@
       "stageTypePaused": "En pausa",
       "stageTypeWon": "Ganado",
       "stageTypeLost": "Perdido",
-      "multipleTerminalStagesWarning": "Hay más de una etapa de tipo Ganado o Perdido. El tablero o reglas automáticas pueden seleccionar la primera.",
+      "multipleTerminalStagesWarning": "Hay más de una etapa de tipo Perdido. El tablero y las automatizaciones usan la primera.",
       "newStageNamePlaceholder": "Nombre de la nueva etapa",
       "add": "Agregar",
       "createNewPipeline": "Crear un nuevo pipeline",
@@ -660,7 +679,14 @@
       "toastMoveOrDeleteDeals": "Primero mueve o elimina los negocios de esta etapa",
       "toastFailedDeleteStage": "Error al eliminar la etapa",
       "toastFailedDeletePipeline": "Error al eliminar el pipeline",
-      "toastDeleted": "Pipeline eliminado"
+      "toastDeleted": "Pipeline eliminado",
+      "businessLine": {
+        "general": "General",
+        "online": "Ventas online",
+        "projects": "Proyectos B2B"
+      },
+      "businessLineLabel": "Tipo de embudo",
+      "businessLineHint": "Define qué campos extra muestra el deal y a qué embudo deriva leads el agente de IA."
     },
     "analytics": {
       "totalDeals": "Total de negocios",
@@ -914,7 +940,8 @@
         "updateError": "Error al actualizar",
         "duplicateError": "Error al duplicar",
         "deleteError": "Error al eliminar"
-      }
+      },
+      "neodomusTemplatesTitle": "Plantillas Neo Domus — derivación, avisos de pedido y reactivación"
     },
     "edit": {
       "loading": "Cargando...",
@@ -993,6 +1020,14 @@
         "time_based": {
           "label": "Por horario",
           "hint": "Según una programación recurrente"
+        },
+        "deal_stage_changed": {
+          "label": "Deal entra en una etapa",
+          "hint": "Cuando un deal pasa a una de las etapas elegidas (tablero, formulario, API u otra automatización)"
+        },
+        "conversation_window_expiring": {
+          "label": "Ventana de 24 h por vencer",
+          "hint": "Antes de que cierre la ventana de atención de WhatsApp, una vez por mensaje del cliente"
         }
       },
       "trigger": "Disparador",
@@ -1106,7 +1141,19 @@
         "matchWordHint": "Coincide con la palabra clave solo como palabra independiente, así \"k\" ya no se activa con \"thanks\". Ideal para palabras clave cortas en idiomas con espacios; usa Contiene para idiomas que se escriben sin espacios.",
         "matchExact": "Exacta",
         "closeConversationHint": "Cambia el estado de la conversación a \"cerrada\". No requiere configuración."
-      }
+      },
+      "dealTrigger": {
+        "pipeline": "Pipeline",
+        "anyPipeline": "Cualquier pipeline",
+        "stages": "Etapas",
+        "anyStageHint": "Sin selección = cualquier etapa de este pipeline."
+      },
+      "windowTrigger": {
+        "minutesBefore": "Minutos antes de que cierre la ventana",
+        "awaitingOnly": "Solo si el cliente no respondió nuestro último mensaje",
+        "hint": "Los mensajes libres solo se permiten dentro de la ventana de 24 h: es la última oportunidad de enviar uno sin plantilla."
+      },
+      "placeholdersAvailable": "Variables:"
     }
   },
   "Flows": {

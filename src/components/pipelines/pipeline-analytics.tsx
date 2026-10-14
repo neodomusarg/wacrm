@@ -19,7 +19,7 @@ import {
 } from "@/components/ui/tooltip";
 import { useAuth } from "@/hooks/use-auth";
 import { formatCurrency } from "@/lib/currency";
-import { countsTowardActiveValue, stageTypeOf } from "@/lib/neodomus";
+import { closedAtOf, countsTowardActiveValue, stageTypeOf } from "@/lib/neodomus";
 import { useTranslations } from "next-intl";
 
 interface PipelineAnalyticsProps {
@@ -75,8 +75,10 @@ export function PipelineAnalytics({ stages, deals }: PipelineAnalyticsProps) {
 
     const now = new Date();
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    // closed_at (044) — updated_at se mueve con cualquier edición de un
+    // deal ya cerrado y lo volvía a contar en el mes en curso.
     const thisMonth = (d: Deal) => {
-      const ts = d.updated_at ?? d.created_at;
+      const ts = closedAtOf(d);
       return ts ? new Date(ts) >= monthStart : false;
     };
     const wonThisMonth = deals.filter(

@@ -6,6 +6,8 @@
 // whether the account is on OpenAI or Anthropic.
 // ============================================================
 
+import type { LeadProfile } from '@/lib/neodomus'
+
 export type AiProvider = 'openai' | 'anthropic'
 
 /**
@@ -62,6 +64,11 @@ export interface GenerateResult {
   handoff: boolean
   /** Provider token usage for this call, or null when unavailable. */
   usage: AiUsage | null
+  /**
+   * Qualification data the model reported via the `[[LEAD {...}]]`
+   * marker (auto-reply mode), already sanitized. Undefined when absent.
+   */
+  lead?: LeadProfile
 }
 
 /**

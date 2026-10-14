@@ -16,6 +16,7 @@ import {
   Users,
   PhoneCall,
   Loader2,
+  Home,
 } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/client"
@@ -40,18 +41,23 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { AUTOMATION_TEMPLATES, type TemplateSlug } from "@/lib/automations/templates"
+import {
+  AUTOMATION_TEMPLATES,
+  NEODOMUS_AUTOMATION_TEMPLATES,
+  NEODOMUS_TEMPLATE_ORDER,
+  type TemplateSlug,
+} from "@/lib/automations/templates"
 import { triggerMeta, formatRelative, isKnownTrigger } from "@/lib/automations/trigger-meta"
 import { cn } from "@/lib/utils"
 
-const TEMPLATE_ORDER: TemplateSlug[] = [
+const TEMPLATE_ORDER: Exclude<TemplateSlug, (typeof NEODOMUS_TEMPLATE_ORDER)[number]>[] = [
   "welcome_message",
   "out_of_office",
   "lead_qualifier",
   "follow_up_reminder",
 ]
 
-const TEMPLATE_ICON: Record<TemplateSlug, typeof Zap> = {
+const TEMPLATE_ICON: Record<(typeof TEMPLATE_ORDER)[number], typeof Zap> = {
   welcome_message: MessageCircle,
   out_of_office: Clock,
   lead_qualifier: Users,
@@ -202,6 +208,30 @@ export default function AutomationsPage() {
           </div>
         </section>
       )}
+
+      {/* Neo Domus: routing + notification starters. Always reachable (the
+          generic gallery above hides once the account has 3 automations). */}
+      <details className="group rounded-xl border border-border bg-card/40 p-4" open={automations.length < 3}>
+        <summary className="flex cursor-pointer items-center gap-2 text-sm font-semibold text-muted-foreground">
+          <Home className="h-4 w-4 text-primary" />
+          {t("neodomusTemplatesTitle")}
+        </summary>
+        <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+          {NEODOMUS_TEMPLATE_ORDER.map((slug) => {
+            const tpl = NEODOMUS_AUTOMATION_TEMPLATES[slug]
+            return (
+              <button
+                key={slug}
+                onClick={() => startFromTemplate(slug)}
+                className="flex flex-col items-start rounded-xl border border-border bg-card p-4 text-left transition-colors hover:border-primary/50 hover:bg-card/80"
+              >
+                <div className="text-sm font-semibold text-foreground">{tpl.name}</div>
+                <p className="mt-1 text-xs text-muted-foreground">{tpl.description}</p>
+              </button>
+            )
+          })}
+        </div>
+      </details>
 
       {automations.length === 0 ? (
         <div className="flex h-48 flex-col items-center justify-center rounded-xl border border-dashed border-border bg-card/40">

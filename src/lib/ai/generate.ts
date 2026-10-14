@@ -8,6 +8,11 @@ import {
 import { HANDOFF_SENTINEL, aiRequestTimeoutMs } from './defaults'
 import { generateOpenAi } from './providers/openai'
 import { generateAnthropic } from './providers/anthropic'
+import {
+  mergeLeadProfile,
+  sanitizeLeadProfile,
+  type LeadProfile,
+} from '@/lib/neodomus'
 
 export interface GenerateArgs {
   config: AiConfig
@@ -62,7 +67,36 @@ export function parseGeneration(
   raw: string,
   usage: AiUsage | null = null,
 ): GenerateResult {
-  const handoff = raw.includes(HANDOFF_SENTINEL)
-  const text = raw.split(HANDOFF_SENTINEL).join('').trim()
-  return { text, handoff, usage }
+  const { text: withoutLead, lead } = extractLeadBlocks(raw)
+  const handoff = withoutLead.includes(HANDOFF_SENTINEL)
+  const text = withoutLead.split(HANDOFF_SENTINEL).join('').trim()
+  return lead ? { text, handoff, usage, lead } : { text, handoff, usage }
+}
+
+const LEAD_BLOCK = /\[\[\s*LEAD\s*(\{[\s\S]*?\})\s*\]\]/g
+/** A marker the model started but never closed (output cut off by the
+ *  token cap, malformed JSON…). Everything from it to the end goes. */
+const DANGLING_LEAD = /\[\[\s*LEAD[\s\S]*$/
+
+/**
+ * Pull every `[[LEAD {...}]]` block out of the model output. The marker
+ * must NEVER reach the customer, so it is stripped even when its JSON is
+ * invalid; only valid, sanitized JSON is returned as `lead`.
+ */
+export function extractLeadBlocks(raw: string): {
+  text: string
+  lead: LeadProfile | null
+} {
+  let lead: LeadProfile | null = null
+  const text = raw
+    .replace(LEAD_BLOCK, (_, json: string) => {
+      try {
+        lead = mergeLeadProfile(lead, sanitizeLeadProfile(JSON.parse(json)))
+      } catch {
+        // Malformed JSON — drop the block, keep the reply.
+      }
+      return ''
+    })
+    .replace(DANGLING_LEAD, '')
+  return { text, lead }
 }

@@ -13,6 +13,8 @@ import {
 } from '@/lib/flows/meta-send'
 import { sendTypingIndicator } from '@/lib/whatsapp/meta-api'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
+import { formatLeadProfile, mergeLeadProfile } from '@/lib/neodomus'
+import { routeLeadToPipeline } from './lead-routing'
 
 interface DispatchArgs {
   /** Tenancy key — drives config, contact, and whatsapp_config lookups. */
@@ -26,6 +28,15 @@ interface DispatchArgs {
    *  a typing indicator (which also marks it read) is shown while the
    *  reply is generated. Optional so older callers keep working. */
   inboundMessageId?: string
+  /**
+   * ISO instant captured by the webhook right before it dispatched
+   * automations for this inbound. When set, the bot stands down only if
+   * something (an automation, a teammate) actually sent a message into
+   * the thread since then — instead of standing down whenever the
+   * account has ANY active message-level automation, which silenced the
+   * bot account-wide the moment a single keyword rule was switched on.
+   */
+  repliesSince?: string
 }
 
 /**
@@ -56,6 +67,7 @@ export async function dispatchInboundToAiReply(
     contactId,
     configOwnerUserId,
     inboundMessageId,
+    repliesSince,
   } = args
 
   try {
@@ -65,25 +77,35 @@ export async function dispatchInboundToAiReply(
     if (!config || !config.autoReplyEnabled) return
 
     // Deterministic, user-configured responders win over the LLM — the
-    // caller already excludes messages a Flow consumed. Message-level
-    // automations (`new_message_received` / `keyword_match`) are
-    // dispatched independently for this same inbound and may send their
-    // own reply, so if the account has any active one we stand down to
-    // avoid double-texting the customer. (Relationship triggers like
-    // `first_inbound_message` don't count — they're not per-message
-    // auto-responders.)
-    const { data: autoResponders } = await db
-      .from('automations')
-      .select('id')
-      .eq('account_id', accountId)
-      .eq('is_active', true)
-      .in('trigger_type', ['new_message_received', 'keyword_match'])
-      .limit(1)
-    if (autoResponders && autoResponders.length > 0) return
+    // caller already excludes messages a Flow consumed. Automations for
+    // this same inbound have already run (the webhook awaits them), so
+    // when the caller tells us when that started we can check precisely
+    // whether one of them (or a human) already answered.
+    if (repliesSince) {
+      const { data: replied } = await db
+        .from('messages')
+        .select('id')
+        .eq('conversation_id', conversationId)
+        .neq('sender_type', 'customer')
+        .gte('created_at', repliesSince)
+        .limit(1)
+      if (replied && replied.length > 0) return
+    } else {
+      // Legacy callers: stand down if the account has any active
+      // message-level automation that might reply to this inbound.
+      const { data: autoResponders } = await db
+        .from('automations')
+        .select('id')
+        .eq('account_id', accountId)
+        .eq('is_active', true)
+        .in('trigger_type', ['new_message_received', 'keyword_match'])
+        .limit(1)
+      if (autoResponders && autoResponders.length > 0) return
+    }
 
     const { data: conv, error: convErr } = await db
       .from('conversations')
-      .select('assigned_agent_id, ai_autoreply_disabled, ai_reply_count')
+      .select('assigned_agent_id, ai_autoreply_disabled, ai_reply_count, ai_lead_profile')
       .eq('id', conversationId)
       .maybeSingle()
     if (convErr || !conv) return
@@ -136,11 +158,29 @@ export async function dispatchInboundToAiReply(
       knowledge,
     })
 
-    const { text, handoff, usage } = await generateReply({
+    const { text, handoff, usage, lead } = await generateReply({
       config,
       systemPrompt,
       messages,
     })
+
+    // Qualification data the model reported this turn. Accumulated on the
+    // conversation (a new value overwrites, nothing is ever erased) and
+    // used to drop the lead into the matching pipeline, so the advisor
+    // who picks the thread up already has location / project / products.
+    const leadProfile = mergeLeadProfile(conv.ai_lead_profile ?? null, lead ?? null)
+    if (lead && leadProfile) {
+      await db
+        .from('conversations')
+        .update({ ai_lead_profile: leadProfile })
+        .eq('id', conversationId)
+      await routeLeadToPipeline(db, {
+        accountId,
+        contactId,
+        userId: configOwnerUserId,
+        profile: leadProfile,
+      })
+    }
 
     // Record token spend on the account's BYO key. Fire-and-forget so it
     // never adds latency to the customer-facing send: `logAiUsage`
@@ -164,10 +204,12 @@ export async function dispatchInboundToAiReply(
       // and (c) leave a short internal note so whoever picks it up has
       // context. Assigning fires the `on_conversation_assigned` trigger,
       // which notifies the agent.
-      const summary = buildHandoffSummary({
-        messages,
-        replyCount: conv.ai_reply_count ?? 0,
-      })
+      const leadLine = formatLeadProfile(leadProfile)
+      const summary =
+        buildHandoffSummary({
+          messages,
+          replyCount: conv.ai_reply_count ?? 0,
+        }) + (leadLine ? ` Lead: ${leadLine}` : '')
       const update: Record<string, unknown> = {
         ai_autoreply_disabled: true,
         ai_handoff_summary: summary,

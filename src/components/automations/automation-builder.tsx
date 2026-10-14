@@ -146,8 +146,19 @@ const TRIGGER_OPTIONS: { value: AutomationTriggerType }[] = [
   { value: "new_contact_created" },
   { value: "conversation_assigned" },
   { value: "tag_added" },
+  { value: "deal_stage_changed" },
+  { value: "conversation_window_expiring" },
   { value: "time_based" },
 ]
+
+/**
+ * `time_based` has never been dispatched by any server code path — an
+ * automation on it silently never runs. It stays selectable only for rows
+ * that already use it, so they still render.
+ */
+function triggerOptionsFor(current: AutomationTriggerType) {
+  return TRIGGER_OPTIONS.filter((o) => o.value !== "time_based" || current === "time_based")
+}
 
 function cid(): string {
   return (
@@ -838,7 +849,7 @@ function TriggerCard({
                 onChange={(e) => onTypeChange(e.target.value as AutomationTriggerType)}
                 className="w-full rounded-md border border-border bg-muted px-2 py-1.5 text-sm text-foreground focus:border-primary focus:outline-none"
               >
-                {TRIGGER_OPTIONS.map((o) => (
+                {triggerOptionsFor(type).map((o) => (
                   <option key={o.value} value={o.value}>
                     {t(`triggers.${o.value}.label`)}
                   </option>
@@ -857,6 +868,12 @@ function TriggerCard({
             )}
             {type === "interactive_reply" && (
               <InteractiveReplyConfig config={config} onChange={onConfigChange} t={t} />
+            )}
+            {type === "deal_stage_changed" && (
+              <DealStageTriggerConfig config={config} onChange={onConfigChange} t={t} />
+            )}
+            {type === "conversation_window_expiring" && (
+              <WindowExpiringTriggerConfig config={config} onChange={onConfigChange} t={t} />
             )}
             {type === "tag_added" && (
               <div>
@@ -982,6 +999,141 @@ function KeywordMatchConfig({
         )}
       </div>
     </div>
+  )
+}
+
+/** Pipeline + stage filter for deal_stage_changed (both optional). */
+function DealStageTriggerConfig({
+  config,
+  onChange,
+  t,
+}: {
+  config: Record<string, unknown>
+  onChange: (c: Record<string, unknown>) => void
+  t: ReturnType<typeof useTranslations>
+}) {
+  const { pipelines, stages } = useResources()
+  const pipelineId = (config.pipeline_id as string | undefined) ?? ""
+  const stageIds = (config.stage_ids as string[] | undefined) ?? []
+  const stageOptions = stages.filter((s) => s.pipeline_id === pipelineId)
+
+  function toggleStage(id: string) {
+    const next = stageIds.includes(id)
+      ? stageIds.filter((s) => s !== id)
+      : [...stageIds, id]
+    onChange({ ...config, stage_ids: next })
+  }
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <label className="mb-1 block text-xs font-medium text-muted-foreground">
+          {t("dealTrigger.pipeline")}
+        </label>
+        <select
+          value={pipelineId}
+          onChange={(e) =>
+            onChange({ ...config, pipeline_id: e.target.value || undefined, stage_ids: [] })
+          }
+          className={SELECT_CLASS}
+        >
+          <option value="">{t("dealTrigger.anyPipeline")}</option>
+          {pipelines.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+            </option>
+          ))}
+        </select>
+      </div>
+      {pipelineId && (
+        <div>
+          <label className="mb-1 block text-xs font-medium text-muted-foreground">
+            {t("dealTrigger.stages")}
+          </label>
+          <div className="space-y-1">
+            {stageOptions.map((s) => (
+              <label key={s.id} className="flex items-center gap-2 text-sm text-foreground">
+                <input
+                  type="checkbox"
+                  checked={stageIds.includes(s.id)}
+                  onChange={() => toggleStage(s.id)}
+                  className="h-3.5 w-3.5 accent-primary"
+                />
+                {s.name}
+              </label>
+            ))}
+          </div>
+          <p className="mt-1 text-[11px] text-muted-foreground">{t("dealTrigger.anyStageHint")}</p>
+        </div>
+      )}
+      <PlaceholderHint
+        label={t("placeholdersAvailable")}
+        names={[
+          "contact.first_name",
+          "deal.title",
+          "deal.order_ref",
+          "deal.tracking_code",
+          "deal.shipping_carrier",
+          "deal.installation_date",
+          "stage.name",
+        ]}
+      />
+    </div>
+  )
+}
+
+function WindowExpiringTriggerConfig({
+  config,
+  onChange,
+  t,
+}: {
+  config: Record<string, unknown>
+  onChange: (c: Record<string, unknown>) => void
+  t: ReturnType<typeof useTranslations>
+}) {
+  const minutes = (config.minutes_before as number | undefined) ?? 120
+  const awaiting = config.only_if_awaiting_customer !== false
+  return (
+    <div className="space-y-3">
+      <div>
+        <label className="mb-1 block text-xs font-medium text-muted-foreground">
+          {t("windowTrigger.minutesBefore")}
+        </label>
+        <Input
+          type="number"
+          min={5}
+          max={1380}
+          value={minutes}
+          onChange={(e) => onChange({ ...config, minutes_before: Number(e.target.value) })}
+          className="bg-muted text-foreground"
+        />
+      </div>
+      <label className="flex items-center gap-2 text-sm text-foreground">
+        <input
+          type="checkbox"
+          checked={awaiting}
+          onChange={(e) => onChange({ ...config, only_if_awaiting_customer: e.target.checked })}
+          className="h-3.5 w-3.5 accent-primary"
+        />
+        {t("windowTrigger.awaitingOnly")}
+      </label>
+      <p className="text-[11px] text-muted-foreground">{t("windowTrigger.hint")}</p>
+    </div>
+  )
+}
+
+/** Placeholders are shown verbatim, outside the ICU message catalogue
+ *  (next-intl would parse the double braces). */
+function PlaceholderHint({ label, names }: { label: string; names: string[] }) {
+  return (
+    <p className="text-[11px] leading-relaxed text-muted-foreground">
+      {label}{" "}
+      {names.map((n) => (
+        <code key={n} className="mr-1 rounded bg-muted px-1 font-mono text-[10px]">
+          {`{{${n}}}`}
+        </code>
+      ))}
+    </p>
   )
 }
 

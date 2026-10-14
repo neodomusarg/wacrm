@@ -24,17 +24,20 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { GitBranch, Plus, ChevronDown, Settings } from "lucide-react";
+import { GitBranch, Plus, ChevronDown, Settings, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { useCan } from "@/hooks/use-can";
 import { useAuth } from "@/hooks/use-auth";
 import { GatedButton } from "@/components/ui/gated-button";
 import { useTranslations } from "next-intl";
 import {
-  NEODOMUS_DEFAULT_STAGES,
-  NEODOMUS_PIPELINE_NAME,
+  BUSINESS_LINES,
+  PIPELINE_BLUEPRINTS,
+  businessLineOf,
+  stageRowsFor,
   stageTypeOf,
   statusForStageType,
+  type BusinessLine,
 } from "@/lib/neodomus";
 import { StageTransitionDialog } from "@/components/pipelines/stage-transition-dialog";
 
@@ -59,6 +62,7 @@ export default function PipelinesPage() {
   // Dialog / sheet state
   const [newPipelineOpen, setNewPipelineOpen] = useState(false);
   const [newPipelineName, setNewPipelineName] = useState("");
+  const [newPipelineLine, setNewPipelineLine] = useState<BusinessLine>("online");
   const [creating, setCreating] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
@@ -107,37 +111,58 @@ export default function PipelinesPage() {
     [supabase],
   );
 
+  /**
+   * Crea un pipeline con las etapas de su línea de negocio. Si las etapas
+   * no se pueden insertar se borra el pipeline, para no dejar un tablero
+   * vacío al que no se le pueden cargar deals.
+   */
+  const createPipelineWithStages = useCallback(
+    async (name: string, line: BusinessLine): Promise<Pipeline | null> => {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      const user = session?.user;
+      if (!user) return null;
+      // pipelines.account_id is NOT NULL post-017 with no DB default.
+      if (!accountId) return null;
+
+      const { data: pipeline, error } = await supabase
+        .from("pipelines")
+        .insert({ user_id: user.id, account_id: accountId, name, business_line: line })
+        .select()
+        .single();
+
+      if (error || !pipeline) {
+        console.error("Failed to create pipeline:", error?.message);
+        return null;
+      }
+
+      const { error: stagesError } = await supabase
+        .from("pipeline_stages")
+        .insert(stageRowsFor(pipeline.id, line));
+      if (stagesError) {
+        console.error("Failed to create pipeline stages:", stagesError.message);
+        await supabase.from("pipelines").delete().eq("id", pipeline.id);
+        return null;
+      }
+
+      return pipeline as Pipeline;
+    },
+    [supabase, accountId],
+  );
+
+  // Cuenta nueva: se crean los dos embudos de Neo Domus.
   const seedDefaultPipeline = useCallback(async (): Promise<Pipeline | null> => {
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
-    const user = session?.user;
-    if (!user) return null;
-    // pipelines.account_id is NOT NULL post-017 with no DB default.
-    if (!accountId) return null;
-
-    const { data: pipeline, error } = await supabase
-      .from("pipelines")
-      .insert({ user_id: user.id, account_id: accountId, name: NEODOMUS_PIPELINE_NAME })
-      .select()
-      .single();
-
-    if (error || !pipeline) {
-      console.error("Failed to seed pipeline:", error?.message);
-      return null;
-    }
-
-    const stagesPayload = NEODOMUS_DEFAULT_STAGES.map((s) => ({
-      pipeline_id: pipeline.id,
-      name: s.name,
-      color: s.color,
-      position: s.position,
-      stage_type: s.stage_type,
-    }));
-    await supabase.from("pipeline_stages").insert(stagesPayload);
-
-    return pipeline as Pipeline;
-  }, [supabase, accountId]);
+    const online = await createPipelineWithStages(
+      PIPELINE_BLUEPRINTS.online.name,
+      "online",
+    );
+    const projects = await createPipelineWithStages(
+      PIPELINE_BLUEPRINTS.projects.name,
+      "projects",
+    );
+    return online ?? projects;
+  }, [createPipelineWithStages]);
 
   // Initial load + seed-if-empty
   useEffect(() => {
@@ -274,14 +299,6 @@ export default function PipelinesPage() {
     if (!name) return;
     setCreating(true);
 
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
-    const user = session?.user;
-    if (!user) {
-      setCreating(false);
-      return;
-    }
     // pipelines.account_id is NOT NULL post-017 with no DB default.
     if (!accountId) {
       toast.error(t("toastNotLinkedToAccount"));
@@ -289,26 +306,12 @@ export default function PipelinesPage() {
       return;
     }
 
-    const { data: pipeline, error } = await supabase
-      .from("pipelines")
-      .insert({ user_id: user.id, account_id: accountId, name })
-      .select()
-      .single();
-
-    if (error || !pipeline) {
+    const pipeline = await createPipelineWithStages(name, newPipelineLine);
+    if (!pipeline) {
       toast.error(t("toastFailedCreatePipeline"));
       setCreating(false);
       return;
     }
-
-    const stagesPayload = NEODOMUS_DEFAULT_STAGES.map((s) => ({
-      pipeline_id: pipeline.id,
-      name: s.name,
-      color: s.color,
-      position: s.position,
-      stage_type: s.stage_type,
-    }));
-    await supabase.from("pipeline_stages").insert(stagesPayload);
 
     setNewPipelineName("");
     setNewPipelineOpen(false);
@@ -319,6 +322,28 @@ export default function PipelinesPage() {
   }
 
   const selectedPipeline = pipelines.find((p) => p.id === selectedPipelineId);
+  const missingLines = (["online", "projects"] as const).filter(
+    (line) => !pipelines.some((p) => businessLineOf(p) === line),
+  );
+
+  async function handleSetupDualPipelines() {
+    setCreating(true);
+    let firstId: string | null = null;
+    for (const line of missingLines) {
+      const created = await createPipelineWithStages(PIPELINE_BLUEPRINTS[line].name, line);
+      if (!created) {
+        toast.error(t("toastFailedCreatePipeline"));
+        break;
+      }
+      firstId ??= created.id;
+    }
+    await refreshPipelines();
+    if (firstId) {
+      setSelectedPipelineId(firstId);
+      toast.success(t("toastDualPipelinesCreated"));
+    }
+    setCreating(false);
+  }
 
   if (loading) {
     return (
@@ -350,6 +375,11 @@ export default function PipelinesPage() {
               <span className="font-semibold">
                 {selectedPipeline?.name ?? t("selectPipeline")}
               </span>
+              {selectedPipeline && businessLineOf(selectedPipeline) !== "general" && (
+                <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
+                  {t(`businessLine.${businessLineOf(selectedPipeline)}`)}
+                </span>
+              )}
               <ChevronDown className="h-4 w-4 text-muted-foreground" />
             </DropdownMenuTrigger>
             <DropdownMenuContent
@@ -372,10 +402,25 @@ export default function PipelinesPage() {
                   }
                 >
                   <GitBranch className="mr-2 h-3.5 w-3.5" />
-                  {p.name}
+                  <span className="flex-1 truncate">{p.name}</span>
+                  {businessLineOf(p) !== "general" && (
+                    <span className="ml-2 text-[10px] uppercase tracking-wide text-muted-foreground">
+                      {t(`businessLine.${businessLineOf(p)}`)}
+                    </span>
+                  )}
                 </DropdownMenuItem>
               ))}
               <DropdownMenuSeparator className="bg-border" />
+              {canEditSettings && missingLines.length > 0 && (
+                <DropdownMenuItem
+                  onClick={() => void handleSetupDualPipelines()}
+                  disabled={creating}
+                  className="text-popover-foreground"
+                >
+                  <Sparkles className="mr-2 h-3.5 w-3.5" />
+                  {t("setupDualPipelines")}
+                </DropdownMenuItem>
+              )}
               {selectedPipeline && (
                 <DropdownMenuItem
                   onClick={() => setSettingsOpen(true)}
@@ -463,8 +508,22 @@ export default function PipelinesPage() {
                 if (e.key === "Enter") handleCreatePipeline();
               }}
             />
+            <Label className="mt-4 block text-muted-foreground">{t("businessLineLabel")}</Label>
+            <select
+              value={newPipelineLine}
+              onChange={(e) => setNewPipelineLine(e.target.value as BusinessLine)}
+              className="mt-2 h-9 w-full rounded-lg border border-border bg-muted px-2.5 text-sm text-foreground outline-none focus:border-primary"
+            >
+              {BUSINESS_LINES.map((line) => (
+                <option key={line} value={line}>
+                  {t(`businessLine.${line}`)}
+                </option>
+              ))}
+            </select>
             <p className="mt-2 text-xs text-muted-foreground">
-              {t("defaultStagesDesc")}
+              {t("businessLineStagesDesc", {
+                stages: PIPELINE_BLUEPRINTS[newPipelineLine].stages.map((s) => s.name).join(" → "),
+              })}
             </p>
           </div>
           <DialogFooter className="bg-popover/50 border-border">
@@ -508,6 +567,7 @@ export default function PipelinesPage() {
         onOpenChange={setDealFormOpen}
         deal={editingDeal}
         pipelineId={selectedPipelineId}
+        businessLine={businessLineOf(selectedPipeline)}
         stages={stages}
         defaultStageId={defaultStageId}
         onSaved={refreshDeals}

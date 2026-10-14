@@ -37,6 +37,8 @@ const h = vi.hoisted(() => ({
     contactUpdates: [] as Record<string, unknown>[],
     /** Patches applied to `messages` by a status webhook (#535). */
     messageUpdates: [] as Record<string, unknown>[],
+    /** `status IN (...)` guard on each of those updates (forward-only). */
+    messageStatusGuards: [] as string[][],
     /** Row the status webhook's broadcast_recipients lookup resolves. */
     broadcastRecipient: null as { id: string; status: string } | null,
     /** Patches applied to that broadcast_recipients row. */
@@ -194,10 +196,18 @@ vi.mock('@supabase/supabase-js', () => ({
                       }),
                     }),
                   },
-            // Status webhook mirror (#535): update(...).eq('message_id', ...)
+            // Status webhook mirror (#535):
+            // update(...).eq('message_id', ...).in('status', priorStatuses)
             update: (patch: Record<string, unknown>) => {
               h.state.messageUpdates.push(patch)
-              return { eq: () => Promise.resolve({ error: null }) }
+              return {
+                eq: () => ({
+                  in: (_col: string, prior: string[]) => {
+                    h.state.messageStatusGuards.push(prior)
+                    return Promise.resolve({ error: null })
+                  },
+                }),
+              }
             },
             // Idempotent insert: upsert(...).select('id')
             upsert: (row: Record<string, unknown>, options: unknown) => {
@@ -366,6 +376,7 @@ beforeEach(() => {
   h.state.replyContextParent = null
   h.state.conversation = { id: 'conv-1', unread_count: 0, account_id: 'acc-1' }
   h.state.upsertCalls = []
+  h.state.messageStatusGuards = []
   h.state.rpcCalls = []
   h.state.afterCallbacks = []
   h.state.automationStarted = 0
@@ -1007,6 +1018,8 @@ describe('status webhook: failed statuses keep Meta\'s reason (#535)', () => {
 
     expect(warn).not.toHaveBeenCalled()
     expect(h.state.messageUpdates).toEqual([{ status: 'delivered' }])
+    // Out-of-order safety: a late `delivered` must never overwrite `read`.
+    expect(h.state.messageStatusGuards).toEqual([['sending', 'sent']])
     expect(h.state.recipientUpdates).toHaveLength(1)
     expect(h.state.recipientUpdates[0]).not.toHaveProperty('error_message')
     expect(h.state.recipientUpdates[0]).not.toHaveProperty('error_code')

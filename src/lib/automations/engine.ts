@@ -17,6 +17,8 @@ import type {
   WaitStepConfig,
   CreateDealStepConfig,
   AssignConversationStepConfig,
+  DealStageChangedTriggerConfig,
+  WindowExpiringTriggerConfig,
 } from '@/types'
 import { supabaseAdmin } from './admin-client'
 import { addContactTagIfAbsent } from '@/lib/contacts/tag-write'
@@ -42,6 +44,19 @@ export interface AutomationContext {
   agent_id?: string
   /** Button / list-row id the customer tapped, for interactive_reply. */
   interactive_reply_id?: string
+  /** deal_stage_changed: the deal and the move. */
+  deal_id?: string
+  pipeline_id?: string
+  from_stage_id?: string | null
+  to_stage_id?: string
+  /** conversation_window_expiring: the scan bucket that fired. */
+  minutes_before?: number
+  /**
+   * Read-only values for `{{contact.name}}`, `{{deal.tracking_code}}`,
+   * `{{stage.name}}`… placeholders. Filled by the dispatcher; persisted
+   * with the context across `wait` steps.
+   */
+  data?: Record<string, Record<string, string | number | null>>
 }
 
 export interface DispatchInput {
@@ -64,9 +79,11 @@ export interface DispatchInput {
  * All errors are caught and logged; per-automation failures are
  * recorded into automation_logs with status='failed'.
  */
-export async function runAutomationsForTrigger(input: DispatchInput): Promise<void> {
+export async function runAutomationsForTrigger(input: DispatchInput): Promise<number> {
+  let executed = 0
   try {
     const db = supabaseAdmin()
+    let contactData: Record<string, string | number | null> | null = null
 
     // Tenant isolation. `contactId` can be caller-supplied (the manual
     // POST /api/automations/engine entrypoint reads it straight from the
@@ -78,18 +95,19 @@ export async function runAutomationsForTrigger(input: DispatchInput): Promise<vo
     if (input.contactId) {
       const { data: owned, error: ownErr } = await db
         .from('contacts')
-        .select('id')
+        .select('id, name, phone, email, company')
         .eq('id', input.contactId)
         .eq('account_id', input.accountId)
         .maybeSingle()
       if (ownErr) {
         console.error('[automations] contact ownership check failed:', ownErr)
-        return
+        return executed
       }
       if (!owned) {
         console.warn('[automations] contact not in account, refusing dispatch', input.contactId)
-        return
+        return executed
       }
+      contactData = contactTemplateData(owned)
     }
 
     const { data: automations, error } = await db
@@ -101,20 +119,48 @@ export async function runAutomationsForTrigger(input: DispatchInput): Promise<vo
 
     if (error) {
       console.error('[automations] fetch failed:', error)
-      return
+      return executed
     }
-    if (!automations || automations.length === 0) return
+    if (!automations || automations.length === 0) return executed
+
+    // `{{contact.*}}` placeholders resolve from the row loaded by the
+    // ownership check above — no extra query per automation.
+    const context: AutomationContext = contactData
+      ? {
+          ...input.context,
+          data: { ...input.context?.data, contact: contactData },
+        }
+      : (input.context ?? {})
 
     for (const automation of automations as Automation[]) {
-      if (!triggerMatches(automation, input.context)) continue
+      if (!triggerMatches(automation, context)) continue
       try {
-        await executeAutomation(automation, input)
+        await executeAutomation(automation, { ...input, context })
+        executed++
       } catch (err) {
         console.error('[automations] execute failed:', automation.id, err)
       }
     }
   } catch (err) {
     console.error('[automations] dispatch failed:', err)
+  }
+  return executed
+}
+
+/** First word of a contact name, for greetings ("Hola {{contact.first_name}}"). */
+function contactTemplateData(row: {
+  name?: string | null
+  phone?: string | null
+  email?: string | null
+  company?: string | null
+}): Record<string, string | number | null> {
+  const name = (row.name ?? '').trim()
+  return {
+    name: name || null,
+    first_name: name ? name.split(/\s+/)[0] : null,
+    phone: row.phone ?? null,
+    email: row.email ?? null,
+    company: row.company ?? null,
   }
 }
 
@@ -365,6 +411,7 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
       const text = interpolate(cfg.text, args)
       if (!text.trim()) throw new Error('send_message has empty text')
       const conversationId = await resolveConversationId(args)
+      await assertServiceWindowOpen(conversationId)
       const { whatsapp_message_id } = await engineSendText({
         accountId: args.automation.account_id,
         userId: args.automation.user_id,
@@ -377,7 +424,15 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
 
     case 'send_buttons':
     case 'send_list': {
-      const payload = step.step_config as SendButtonsStepConfig | SendListStepConfig
+      const raw = step.step_config as SendButtonsStepConfig | SendListStepConfig
+      // Customer-visible text supports the same placeholders as
+      // send_message; ids stay literal (they are routing keys).
+      const payload = {
+        ...raw,
+        body: interpolate(raw.body ?? '', args),
+        ...(raw.header != null && { header: interpolate(raw.header, args) }),
+        ...(raw.footer != null && { footer: interpolate(raw.footer, args) }),
+      } as SendButtonsStepConfig | SendListStepConfig
       if (!args.contactId) throw new Error(`${step.step_type} needs a contact`)
       // Validate against Meta's limits before the network call so a bad
       // payload surfaces as a clear failed-step detail rather than a raw
@@ -385,6 +440,7 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
       const check = validateInteractivePayload(payload)
       if (!check.ok) throw new Error(check.error)
       const conversationId = await resolveConversationId(args)
+      await assertServiceWindowOpen(conversationId)
       const { whatsapp_message_id } = await engineSendInteractive({
         accountId: args.automation.account_id,
         userId: args.automation.user_id,
@@ -416,7 +472,10 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
               if (bNum) return 1
               return a.localeCompare(b)
             })
-            .map((k) => String(cfg.variables![k]))
+            // Values may carry placeholders — a shipping template's {{1}}
+            // is typically "{{contact.first_name}}", {{2}}
+            // "{{deal.tracking_code}}".
+            .map((k) => interpolate(String(cfg.variables![k]), args))
         : []
       const { whatsapp_message_id } = await engineSendTemplate({
         accountId: args.automation.account_id,
@@ -564,12 +623,29 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
       // created deals consistent with the one-currency-per-account
       // rule (issue #218). Fall back to USD if the row is somehow
       // missing the value (pre-021 forks).
+      if (cfg.skip_if_open !== false && args.contactId) {
+        const { data: openDeals } = await db
+          .from('deals')
+          .select('id')
+          .eq('account_id', args.automation.account_id)
+          .eq('contact_id', args.contactId)
+          .eq('pipeline_id', cfg.pipeline_id)
+          .eq('status', 'open')
+          .limit(1)
+        if (openDeals && openDeals.length > 0) {
+          return 'skipped: contact already has an open deal in this pipeline'
+        }
+      }
       const { data: acct } = await db
         .from('accounts')
         .select('default_currency')
         .eq('id', args.automation.account_id)
         .maybeSingle()
-      await db.from('deals').insert({
+      // The insert used to be fire-and-forget on its error, so a deleted
+      // stage or a pipeline from another account logged "deal created"
+      // while nothing was written. Migration 044's integrity trigger now
+      // rejects mismatched stage/pipeline/account; surface that.
+      const { error: dealErr } = await db.from('deals').insert({
         // Tenancy + audit, same split as automation_logs above.
         account_id: args.automation.account_id,
         user_id: args.automation.user_id,
@@ -581,6 +657,7 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
         currency: acct?.default_currency ?? 'USD',
         status: 'open',
       })
+      if (dealErr) throw new Error(`create_deal failed: ${dealErr.message}`)
       return 'deal created'
     }
 
@@ -730,7 +807,63 @@ export function triggerMatches(automation: Automation, ctx: AutomationContext | 
     return Boolean(tagId && cfg?.tag_id && cfg.tag_id === tagId)
   }
 
+  if (automation.trigger_type === 'deal_stage_changed') {
+    const cfg = (automation.trigger_config ?? {}) as DealStageChangedTriggerConfig
+    if (!ctx?.to_stage_id) return false
+    if (cfg.pipeline_id && cfg.pipeline_id !== ctx.pipeline_id) return false
+    if (Array.isArray(cfg.stage_ids) && cfg.stage_ids.length > 0) {
+      return cfg.stage_ids.includes(ctx.to_stage_id)
+    }
+    return true
+  }
+
+  // The cron scans one bucket per distinct minutes_before; each automation
+  // only fires for its own bucket.
+  if (automation.trigger_type === 'conversation_window_expiring') {
+    const cfg = (automation.trigger_config ?? {}) as WindowExpiringTriggerConfig
+    return windowMinutesOf(cfg) === ctx?.minutes_before
+  }
+
   return true
+}
+
+/** Normalized `minutes_before` (same clamp as claim_expiring_conversations). */
+export function windowMinutesOf(cfg: Partial<WindowExpiringTriggerConfig> | null | undefined): number {
+  const raw = Number(cfg?.minutes_before)
+  const m = Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 120
+  return Math.min(Math.max(m, 5), 23 * 60)
+}
+
+/**
+ * Free-form messages (text, buttons, lists) are only accepted by Meta
+ * inside the 24 h customer-service window; outside it Meta answers 131047
+ * after the request. Fail the step up-front with an actionable message —
+ * use a template step for anything that can land later (order shipped,
+ * installation reminders…).
+ *
+ * Only enforced when migration 044's last_inbound_at is readable; a
+ * missing column or row leaves the decision to Meta, as before.
+ */
+async function assertServiceWindowOpen(conversationId: string): Promise<void> {
+  const { data, error } = await supabaseAdmin()
+    .from('conversations')
+    .select('last_inbound_at')
+    .eq('id', conversationId)
+    .maybeSingle()
+  if (error || !data) return
+  const last = (data as { last_inbound_at?: string | null }).last_inbound_at
+  if (last === undefined) return
+  if (!isWithinServiceWindow(last)) {
+    throw new Error(
+      'outside the 24h WhatsApp window (no customer message in the last 24h) — use a send_template step',
+    )
+  }
+}
+
+export function isWithinServiceWindow(lastInboundAt: string | null, now: number = Date.now()): boolean {
+  if (!lastInboundAt) return false
+  const t = Date.parse(lastInboundAt)
+  return Number.isFinite(t) && now - t < 24 * 60 * 60 * 1000
 }
 
 async function evaluateCondition(cfg: ConditionStepConfig, args: ExecuteArgs): Promise<boolean> {
@@ -790,11 +923,16 @@ function waitMs(cfg: WaitStepConfig): number {
   return Math.max(1_000, cfg.amount * unitMs)
 }
 
-function interpolate(s: string, args: ExecuteArgs): string {
+export function interpolate(s: string, args: Pick<ExecuteArgs, 'context'>): string {
   return s.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, key) => {
     const [ns, prop] = String(key).split('.')
     if (ns === 'message' && prop === 'text') return String(args.context.message_text ?? '')
     if (ns === 'vars' && prop) return String(args.context.vars?.[prop] ?? '')
+    // contact.* / deal.* / stage.* / pipeline.* — see AutomationContext.data.
+    if (prop) {
+      const v = args.context.data?.[ns]?.[prop]
+      return v == null ? '' : String(v)
+    }
     return ''
   })
 }

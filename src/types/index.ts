@@ -1,6 +1,6 @@
 import type { AccountRole } from "@/lib/auth/roles";
 import type { InteractiveMessagePayload } from "@/lib/whatsapp/interactive";
-import type { Segment, LeadSource, LostReason } from "@/lib/neodomus";
+import type { Segment, LeadSource, LostReason, BusinessLine, LeadProfile } from "@/lib/neodomus";
 
 export type {
   InteractiveMessagePayload,
@@ -193,6 +193,10 @@ export interface Conversation {
   ai_autoreply_disabled?: boolean;
   ai_reply_count?: number;
   ai_handoff_summary?: string | null;
+  /** Datos de calificación que extrajo el agente de IA (migración 044). */
+  ai_lead_profile?: LeadProfile | null;
+  /** Último mensaje del cliente — base de la ventana de 24 h (migración 044). */
+  last_inbound_at?: string | null;
 }
 
 // ============================================================
@@ -372,6 +376,8 @@ export interface Pipeline {
   id: string;
   user_id: string;
   name: string;
+  /** Línea de negocio (migración 044). Ausente antes de aplicarla. */
+  business_line?: BusinessLine;
   created_at: string;
 }
 
@@ -384,6 +390,8 @@ export interface PipelineStage {
   position: number;
   color: string;
   stage_type?: StageType;
+  /** Slug estable para automatizaciones / IA (migración 044). */
+  stage_key?: string | null;
   created_at: string;
 }
 
@@ -415,6 +423,16 @@ export interface Deal {
   square_meters?: number | null;
   lost_reason?: LostReason | null;
   recontact_date?: string | null;
+  // Migración 044 — pedido online / ubicación / instalación
+  order_ref?: string | null;
+  tracking_code?: string | null;
+  shipping_carrier?: string | null;
+  province?: string | null;
+  city?: string | null;
+  installation_date?: string | null;
+  stage_entered_at?: string | null;
+  /** Momento en que el deal pasó a ganado / perdido (migración 044). */
+  closed_at?: string | null;
   created_at: string;
   updated_at?: string;
   contact?: Contact;
@@ -496,7 +514,12 @@ export type AutomationTriggerType =
   | 'time_based'
   /** Customer tapped a reply button / list row whose id matches; lets
    *  multi-step menus be chained across automations. */
-  | 'interactive_reply';
+  | 'interactive_reply'
+  /** A deal entered a stage (migration 044 outbox, drained by the cron). */
+  | 'deal_stage_changed'
+  /** The 24 h customer-service window of an open conversation is about
+   *  to close (migration 044, scanned by the cron). */
+  | 'conversation_window_expiring';
 
 export type AutomationStepType =
   | 'send_message'
@@ -544,12 +567,33 @@ export interface InteractiveReplyTriggerConfig {
   reply_ids: string[];
 }
 
+/**
+ * Fires when a deal ENTERS one of `stage_ids` (empty/absent = any stage
+ * of `pipeline_id`; both empty = any stage change in the account).
+ */
+export interface DealStageChangedTriggerConfig {
+  pipeline_id?: string;
+  stage_ids?: string[];
+}
+
+/**
+ * Fires once per inbound cycle, `minutes_before` minutes before the 24 h
+ * window closes. `only_if_awaiting_customer` (default true) limits it to
+ * threads where we wrote last — i.e. the customer left us on read.
+ */
+export interface WindowExpiringTriggerConfig {
+  minutes_before: number;
+  only_if_awaiting_customer?: boolean;
+}
+
 export type AutomationTriggerConfig =
   | Record<string, never>
   | KeywordMatchTriggerConfig
   | TagTriggerConfig
   | TimeBasedTriggerConfig
   | InteractiveReplyTriggerConfig
+  | DealStageChangedTriggerConfig
+  | WindowExpiringTriggerConfig
   | Record<string, unknown>;
 
 export interface SendMessageStepConfig {
@@ -597,6 +641,11 @@ export interface CreateDealStepConfig {
   stage_id: string;
   title: string;
   value?: number;
+  /**
+   * Default true: skip when the contact already has an open deal in this
+   * pipeline, so a menu tapped twice doesn't create two opportunities.
+   */
+  skip_if_open?: boolean;
 }
 
 export interface WaitStepConfig {

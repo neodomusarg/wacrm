@@ -13,6 +13,8 @@ const h = vi.hoisted(() => ({
   state: {
     conv: null as Record<string, unknown> | null,
     autoResponders: [] as { id: string }[],
+    /** Non-customer messages written since `repliesSince`. */
+    repliesSince: [] as { id: string }[],
     claim: true as boolean,
     updatePayload: null as Record<string, unknown> | null,
     rpcCalls: [] as { name: string; args: unknown }[],
@@ -33,6 +35,18 @@ vi.mock('@/lib/whatsapp/meta-api', () => ({
 vi.mock('./admin-client', () => ({
   supabaseAdmin: () => ({
     from: (table: string) => {
+      if (table === 'messages') {
+        // .select().eq().neq().gte().limit() → replies since the inbound
+        const chain = {
+          select: () => chain,
+          eq: () => chain,
+          neq: () => chain,
+          gte: () => chain,
+          limit: () =>
+            Promise.resolve({ data: h.state.repliesSince, error: null }),
+        }
+        return chain
+      }
       if (table === 'automations') {
         // .select().eq().eq().in().limit() → active auto-responders
         const chain = {
@@ -97,6 +111,7 @@ beforeEach(() => {
     ai_reply_count: 0,
   }
   h.state.autoResponders = []
+  h.state.repliesSince = []
   h.state.claim = true
   h.state.updatePayload = null
   h.state.rpcCalls = []
@@ -140,6 +155,32 @@ describe('dispatchInboundToAiReply — eligibility gates', () => {
     expect(h.generateReply).not.toHaveBeenCalled()
     expect(h.engineSendText).not.toHaveBeenCalled()
     expect(h.sendTypingIndicator).not.toHaveBeenCalled()
+  })
+
+  it('with repliesSince, an active keyword automation alone does not silence the bot', async () => {
+    h.state.autoResponders = [{ id: 'auto-1' }]
+    await dispatchInboundToAiReply({ ...ARGS, repliesSince: '2026-10-13T12:00:00Z' })
+    expect(h.engineSendText).toHaveBeenCalled()
+  })
+
+  it('with repliesSince, stands down when an automation or agent already answered', async () => {
+    h.state.repliesSince = [{ id: 'bot-msg' }]
+    await dispatchInboundToAiReply({ ...ARGS, repliesSince: '2026-10-13T12:00:00Z' })
+    expect(h.generateReply).not.toHaveBeenCalled()
+    expect(h.engineSendText).not.toHaveBeenCalled()
+  })
+
+  it('appends the captured lead profile to the handoff note', async () => {
+    h.generateReply.mockResolvedValue({
+      text: '',
+      handoff: true,
+      lead: { intent: 'project', city: 'Córdoba' },
+    })
+    await dispatchInboundToAiReply(ARGS)
+    expect(String(h.state.updatePayload?.ai_handoff_summary)).toContain(
+      'Lead: Proyecto / instalación · 📍 Córdoba',
+    )
+    expect(h.engineSendText).not.toHaveBeenCalled()
   })
 
   it('does not send when the atomic slot claim loses the race', async () => {

@@ -550,3 +550,80 @@ describe("triggerMatches — keyword_match", () => {
     expect(on(automation({ keywords: ["hi"], match_type: "word" }), "")).toBe(false);
   });
 });
+
+// ------------------------------------------------------------
+// Migration 044 — deal_stage_changed / conversation_window_expiring,
+// placeholder data, 24 h window.
+// ------------------------------------------------------------
+import {
+  interpolate,
+  isWithinServiceWindow,
+  windowMinutesOf,
+} from "./engine";
+
+describe("triggerMatches — deal_stage_changed", () => {
+  const auto = (trigger_config: Record<string, unknown>) =>
+    ({ trigger_type: "deal_stage_changed", trigger_config }) as unknown as Automation;
+
+  it("matches any stage change when unfiltered", () => {
+    expect(triggerMatches(auto({}), { to_stage_id: "s1", pipeline_id: "p1" })).toBe(true);
+  });
+
+  it("filters by pipeline and by entered stage", () => {
+    const a = auto({ pipeline_id: "p1", stage_ids: ["shipped"] });
+    expect(triggerMatches(a, { pipeline_id: "p1", to_stage_id: "shipped" })).toBe(true);
+    expect(triggerMatches(a, { pipeline_id: "p1", to_stage_id: "paid" })).toBe(false);
+    expect(triggerMatches(a, { pipeline_id: "p2", to_stage_id: "shipped" })).toBe(false);
+  });
+
+  it("never fires without a stage in the context", () => {
+    expect(triggerMatches(auto({}), {})).toBe(false);
+  });
+});
+
+describe("triggerMatches — conversation_window_expiring", () => {
+  it("fires only for its own minutes bucket", () => {
+    const a = {
+      trigger_type: "conversation_window_expiring",
+      trigger_config: { minutes_before: 90 },
+    } as unknown as Automation;
+    expect(triggerMatches(a, { minutes_before: 90 })).toBe(true);
+    expect(triggerMatches(a, { minutes_before: 120 })).toBe(false);
+  });
+
+  it("normalizes minutes like the SQL claim does", () => {
+    expect(windowMinutesOf({})).toBe(120);
+    expect(windowMinutesOf({ minutes_before: 1 })).toBe(5);
+    expect(windowMinutesOf({ minutes_before: 5000 })).toBe(1380);
+  });
+});
+
+describe("interpolate — placeholder data", () => {
+  it("resolves contact / deal / stage values and blanks unknown ones", () => {
+    const context = {
+      message_text: "hola",
+      data: {
+        contact: { first_name: "Lucía" },
+        deal: { tracking_code: "AB123", order_ref: null },
+        stage: { name: "Despachado" },
+      },
+    };
+    expect(
+      interpolate(
+        "{{contact.first_name}}: {{deal.tracking_code}} ({{stage.name}}) {{deal.order_ref}}{{deal.nope}} {{message.text}}",
+        { context },
+      ),
+    ).toBe("Lucía: AB123 (Despachado)  hola");
+  });
+});
+
+describe("isWithinServiceWindow", () => {
+  const now = Date.parse("2026-10-13T12:00:00Z");
+  it("is open for 24 h after the last customer message", () => {
+    expect(isWithinServiceWindow("2026-10-12T12:30:00Z", now)).toBe(true);
+    expect(isWithinServiceWindow("2026-10-12T11:59:00Z", now)).toBe(false);
+  });
+  it("is closed when the customer never wrote", () => {
+    expect(isWithinServiceWindow(null, now)).toBe(false);
+  });
+});

@@ -13,13 +13,17 @@ import type {
   Profile,
 } from "@/types";
 import {
+  AR_PROVINCES,
   B2B_SEGMENTS,
   B2C_SEGMENTS,
   BUILD_STAGES,
   LEAD_SOURCES,
   LOST_REASONS,
+  SHIPPING_CARRIERS,
+  defaultSegmentFor,
   isB2B,
   stageTypeOf,
+  type BusinessLine,
   type BuildStage,
   type LeadSource,
   type LostReason,
@@ -50,6 +54,8 @@ interface DealFormProps {
   onOpenChange: (open: boolean) => void;
   deal?: Deal | null;
   pipelineId: string;
+  /** Línea de negocio del pipeline: decide qué secciones extra se muestran. */
+  businessLine?: BusinessLine;
   stages: PipelineStage[];
   defaultStageId?: string;
   onSaved: () => void;
@@ -60,6 +66,7 @@ export function DealForm({
   onOpenChange,
   deal,
   pipelineId,
+  businessLine = "general",
   stages,
   defaultStageId,
   onSaved,
@@ -85,6 +92,12 @@ export function DealForm({
   const [lostReason, setLostReason] = useState<LostReason | "">("");
   const [recontactDate, setRecontactDate] = useState("");
   const [notes, setNotes] = useState("");
+  const [orderRef, setOrderRef] = useState("");
+  const [trackingCode, setTrackingCode] = useState("");
+  const [shippingCarrier, setShippingCarrier] = useState("");
+  const [province, setProvince] = useState("");
+  const [city, setCity] = useState("");
+  const [installationDate, setInstallationDate] = useState("");
 
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
@@ -120,13 +133,19 @@ export function DealForm({
       setLostReason(deal.lost_reason ?? "");
       setRecontactDate(deal.recontact_date ?? "");
       setNotes(deal.notes ?? "");
+      setOrderRef(deal.order_ref ?? "");
+      setTrackingCode(deal.tracking_code ?? "");
+      setShippingCarrier(deal.shipping_carrier ?? "");
+      setProvince(deal.province ?? "");
+      setCity(deal.city ?? "");
+      setInstallationDate(deal.installation_date ?? "");
     } else {
       setTitle("");
       setValue("");
       setCurrency(defaultCurrency);
       setContactId("");
       setCompany("");
-      setSegment("");
+      setSegment(defaultSegmentFor(businessLine));
       setLeadSource("");
       setProjectName("");
       setBuildStage("");
@@ -138,8 +157,14 @@ export function DealForm({
       setLostReason("");
       setRecontactDate("");
       setNotes("");
+      setOrderRef("");
+      setTrackingCode("");
+      setShippingCarrier("");
+      setProvince(businessLine === "projects" ? "Córdoba" : "");
+      setCity("");
+      setInstallationDate("");
     }
-  }, [open, deal, defaultStageId, stages, defaultCurrency]);
+  }, [open, deal, defaultStageId, stages, defaultCurrency, businessLine]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   // Load supporting data once the sheet is open
@@ -187,6 +212,8 @@ export function DealForm({
   const selectedStage = stages.find((s) => s.id === stageId);
   const currentStageType = stageTypeOf(selectedStage);
   const isB2BClient = isB2B(segment);
+  const isOnline = businessLine === "online";
+  const showBuildSection = isB2BClient || businessLine === "projects";
 
   const isSaveDisabled =
     saving ||
@@ -222,7 +249,7 @@ export function DealForm({
 
     setSaving(true);
 
-    const b2b = isB2BClient;
+    const b2b = showBuildSection;
     const parsedUnits = units.trim() !== "" ? Math.max(0, parseInt(units, 10)) : null;
     const parsedSqm = squareMeters.trim() !== "" ? Math.max(0, parseFloat(squareMeters)) : null;
 
@@ -244,6 +271,16 @@ export function DealForm({
       square_meters: b2b && parsedSqm !== null && !isNaN(parsedSqm) ? parsedSqm : null,
       lost_reason: currentStageType === "lost" && lostReason ? lostReason : null,
       recontact_date: recontactDate || null,
+      // Columnas de la migración 044: solo existen en pipelines con línea
+      // de negocio, así que en un pipeline "general" no se envían.
+      ...(businessLine !== "general" && {
+        province: province || null,
+        city: city.trim() || null,
+        order_ref: isOnline && orderRef.trim() ? orderRef.trim() : null,
+        tracking_code: isOnline && trackingCode.trim() ? trackingCode.trim() : null,
+        shipping_carrier: isOnline && shippingCarrier ? shippingCarrier : null,
+        installation_date: !isOnline && installationDate ? installationDate : null,
+      }),
     };
 
     if (deal) {
@@ -431,8 +468,81 @@ export function DealForm({
               </div>
             </div>
 
-            {/* 4. Construction section if B2B */}
-            {isB2BClient && (
+            {/* 3b. Ubicación (embudos Online / Proyectos) */}
+            {businessLine !== "general" && (
+              <div className="grid grid-cols-2 gap-3">
+                <div className="grid gap-2">
+                  <Label className="text-muted-foreground">{t("province")}</Label>
+                  <select
+                    value={province}
+                    onChange={(e) => setProvince(e.target.value)}
+                    className="h-9 w-full rounded-lg border border-border bg-muted px-2.5 text-sm text-foreground outline-none focus:border-primary"
+                  >
+                    <option value="">{t("selectProvince")}</option>
+                    {AR_PROVINCES.map((p) => (
+                      <option key={p} value={p}>
+                        {p}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="grid gap-2">
+                  <Label className="text-muted-foreground">{t("city")}</Label>
+                  <Input
+                    value={city}
+                    onChange={(e) => setCity(e.target.value)}
+                    placeholder={t("cityPlaceholder")}
+                    className="border-border bg-muted text-foreground"
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* 3c. Pedido online */}
+            {isOnline && (
+              <div className="space-y-3 rounded-lg border border-border bg-muted/30 p-3">
+                <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  {t("orderSection")}
+                </p>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="grid gap-2">
+                    <Label className="text-muted-foreground">{t("orderRef")}</Label>
+                    <Input
+                      value={orderRef}
+                      onChange={(e) => setOrderRef(e.target.value)}
+                      placeholder="#1234"
+                      className="border-border bg-muted text-foreground"
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label className="text-muted-foreground">{t("shippingCarrier")}</Label>
+                    <select
+                      value={shippingCarrier}
+                      onChange={(e) => setShippingCarrier(e.target.value)}
+                      className="h-9 w-full rounded-lg border border-border bg-muted px-2.5 text-sm text-foreground outline-none focus:border-primary"
+                    >
+                      <option value="">{t("selectCarrier")}</option>
+                      {SHIPPING_CARRIERS.map((c) => (
+                        <option key={c} value={c}>
+                          {c}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <div className="grid gap-2">
+                  <Label className="text-muted-foreground">{t("trackingCode")}</Label>
+                  <Input
+                    value={trackingCode}
+                    onChange={(e) => setTrackingCode(e.target.value)}
+                    className="border-border bg-muted text-foreground"
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* 4. Construction section if B2B / Proyectos */}
+            {showBuildSection && (
               <div className="space-y-3 rounded-lg border border-border bg-muted/30 p-3">
                 <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                   {t("buildSection")}
@@ -489,6 +599,17 @@ export function DealForm({
                     />
                   </div>
                 </div>
+                {businessLine === "projects" && (
+                  <div className="grid gap-2">
+                    <Label className="text-muted-foreground">{t("installationDate")}</Label>
+                    <Input
+                      type="date"
+                      value={installationDate}
+                      onChange={(e) => setInstallationDate(e.target.value)}
+                      className="border-border bg-muted text-foreground"
+                    />
+                  </div>
+                )}
               </div>
             )}
 

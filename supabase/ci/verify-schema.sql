@@ -85,6 +85,28 @@ BEGIN
       'pipeline_stages.stage_type is missing — migration 043 did not apply';
   END IF;
 
+  -- Dual pipelines + automation outbox (044).
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'pipelines'
+      AND column_name = 'business_line'
+  ) THEN
+    RAISE EXCEPTION
+      'pipelines.business_line is missing — migration 044 did not apply';
+  END IF;
+  IF to_regclass('public.automation_event_queue') IS NULL THEN
+    RAISE EXCEPTION
+      'automation_event_queue is missing — migration 044 did not apply';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'conversations'
+      AND column_name = 'last_inbound_at'
+  ) THEN
+    RAISE EXCEPTION
+      'conversations.last_inbound_at is missing — migration 044 did not apply';
+  END IF;
+
   RAISE NOTICE 'schema verification passed';
 END
 $$;

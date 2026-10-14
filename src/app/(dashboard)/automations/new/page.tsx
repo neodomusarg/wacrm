@@ -8,7 +8,7 @@ import {
   type BuilderInitial,
   type BuilderStep,
 } from "@/components/automations/automation-builder"
-import { AUTOMATION_TEMPLATES, type TemplateSlug } from "@/lib/automations/templates"
+import { getTemplate } from "@/lib/automations/templates"
 import type { AutomationStepType, AutomationTriggerType } from "@/types"
 
 // `useSearchParams` requires a Suspense boundary or the production build
@@ -24,11 +24,11 @@ export default function NewAutomationPage() {
 
 function NewAutomationPageInner() {
   const params = useSearchParams()
-  const template = params.get("template") as TemplateSlug | null
+  const template = params.get("template")
 
   const initial: BuilderInitial = useMemo(() => {
-    if (template && AUTOMATION_TEMPLATES[template]) {
-      const t = AUTOMATION_TEMPLATES[template]
+    const t = template ? getTemplate(template) : null
+    if (t) {
       const steps = expandFromSeeds(
         t.steps.map((seed, idx) => ({
           index: idx,

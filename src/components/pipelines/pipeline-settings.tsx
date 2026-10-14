@@ -36,6 +36,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslations } from "next-intl";
+import { BUSINESS_LINES, businessLineOf, type BusinessLine } from "@/lib/neodomus";
 
 type TranslationFn = (key: string, values?: Record<string, string | number>) => string;
 
@@ -75,6 +76,7 @@ export function PipelineSettings({
   const supabase = createClient();
 
   const [name, setName] = useState(pipeline.name);
+  const [businessLine, setBusinessLine] = useState<BusinessLine>(businessLineOf(pipeline));
   const [localStages, setLocalStages] = useState<PipelineStage[]>(stages);
   const [newStageName, setNewStageName] = useState("");
   const [newStageColor, setNewStageColor] = useState(STAGE_COLORS[0]);
@@ -88,6 +90,7 @@ export function PipelineSettings({
   useEffect(() => {
     if (!open) return;
     setName(pipeline.name);
+    setBusinessLine(businessLineOf(pipeline));
     setLocalStages([...stages].sort((a, b) => a.position - b.position));
     setShowDeleteConfirm(false);
   }, [open, pipeline, stages]);
@@ -121,7 +124,13 @@ export function PipelineSettings({
     const [renameRes, stagesRes] = await Promise.all([
       supabase
         .from("pipelines")
-        .update({ name: name.trim() })
+        .update(
+          // business_line existe desde 044; solo se envía si cambió para que
+          // renombrar siga funcionando sin la migración.
+          businessLine !== businessLineOf(pipeline)
+            ? { name: name.trim(), business_line: businessLine }
+            : { name: name.trim() },
+        )
         .eq("id", pipeline.id),
       supabase.from("pipeline_stages").upsert(stageRows, { onConflict: "id" }),
     ]);
@@ -200,9 +209,11 @@ export function PipelineSettings({
     toast.success(t("toastDeleted"));
   }
 
-  const wonCount = localStages.filter((s) => (s.stage_type ?? "active") === "won").length;
+  // Varias etapas "ganado" son válidas (los embudos de 044 siguen el pedido
+  // o la obra después del cobro; "Marcar como ganado" usa la primera).
+  // Varias "perdido" sí son ambiguas.
   const lostCount = localStages.filter((s) => (s.stage_type ?? "active") === "lost").length;
-  const hasMultipleWonOrLost = wonCount > 1 || lostCount > 1;
+  const hasMultipleWonOrLost = lostCount > 1;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -251,6 +262,22 @@ export function PipelineSettings({
                   onChange={(e) => setName(e.target.value)}
                   className="border-border bg-muted text-foreground"
                 />
+              </div>
+
+              <div className="grid gap-2">
+                <Label className="text-muted-foreground">{t("businessLineLabel")}</Label>
+                <select
+                  value={businessLine}
+                  onChange={(e) => setBusinessLine(e.target.value as BusinessLine)}
+                  className="h-9 w-full rounded-lg border border-border bg-muted px-2.5 text-sm text-foreground outline-none focus:border-primary"
+                >
+                  {BUSINESS_LINES.map((line) => (
+                    <option key={line} value={line}>
+                      {t(`businessLine.${line}`)}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[11px] text-muted-foreground">{t("businessLineHint")}</p>
               </div>
 
               <div className="grid gap-2">

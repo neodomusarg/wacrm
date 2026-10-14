@@ -14,6 +14,7 @@ import {
 import { findExistingContact, isUniqueViolation } from '@/lib/contacts/dedupe'
 import { reopenClosedConversation } from '@/lib/conversations/reopen'
 import { verifyMetaWebhookSignature } from '@/lib/whatsapp/webhook-signature'
+import { messageStatusesBefore } from '@/lib/whatsapp/message-status'
 import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
@@ -439,19 +440,30 @@ async function handleStatusUpdate(status: {
   //    `.select()`: message_id is NOT unique (migration 009 — Meta ids
   //    repeat across numbers), so this updates 0..N rows and must not
   //    assume a single row.
-  const messageUpdate: Record<string, unknown> = { status: status.status }
-  if (failure) {
-    messageUpdate.error_code = failure.code
-    messageUpdate.error_title = failure.title
-    messageUpdate.error_details = failure.details
-  }
-  const { error: msgErr } = await supabaseAdmin()
-    .from('messages')
-    .update(messageUpdate)
-    .eq('message_id', status.id)
+  //
+  //    Meta does not guarantee delivery order: `read` regularly lands
+  //    before `delivered`, and retries replay old statuses. An
+  //    unconditional update regressed ✓✓ blue ticks back to grey (and
+  //    could flip a read message to `failed`). Gate the write in SQL on
+  //    the row's CURRENT status, same forward-only rule the broadcast
+  //    mirror below applies.
+  const priorStatuses = messageStatusesBefore(status.status)
+  if (priorStatuses.length > 0) {
+    const messageUpdate: Record<string, unknown> = { status: status.status }
+    if (failure) {
+      messageUpdate.error_code = failure.code
+      messageUpdate.error_title = failure.title
+      messageUpdate.error_details = failure.details
+    }
+    const { error: msgErr } = await supabaseAdmin()
+      .from('messages')
+      .update(messageUpdate)
+      .eq('message_id', status.id)
+      .in('status', priorStatuses)
 
-  if (msgErr) {
-    console.error('Error updating message status:', msgErr)
+    if (msgErr) {
+      console.error('Error updating message status:', msgErr)
+    }
   }
 
   // Webhook fan-out for this status change happens at the END of this
@@ -904,6 +916,13 @@ async function processMessage(
   // Fire-and-forget: a slow or failing automation must not block the
   // webhook's 200 OK response to Meta.
   const inboundText = contentText ?? message.text?.body ?? ''
+  // Anything a non-customer sender writes into the thread from here on
+  // (an automation below, a teammate) counts as "already answered" for
+  // the AI auto-reply gate further down. Backdated a few seconds so clock
+  // skew between this server and Postgres' now() (messages.created_at)
+  // can't let an automation's reply slip under the cutoff — erring
+  // towards the bot staying quiet, never towards double-texting.
+  const repliesSince = new Date(Date.now() - 5_000).toISOString()
   const automationTriggers: (
     | 'new_contact_created'
     | 'first_inbound_message'
@@ -968,6 +987,7 @@ async function processMessage(
       // Lets the bot show "typing…" (and mark the message read) while
       // the reply is generated.
       inboundMessageId: message.id,
+      repliesSince,
     })
   }
 

@@ -482,10 +482,21 @@ async function executeHandoff(
   node: FlowNodeRow,
 ): Promise<void> {
   const cfg = node.config as { assign_to?: string; note?: string };
+  // The note may reference captured answers ({{vars.city}}…); it used to
+  // be stored raw, so agents read literal placeholders.
+  const note = cfg.note ? interpolateVars(cfg.note, run.vars) : null;
   const convUpdate: Record<string, unknown> = {
     status: "pending",
+    // A human now owns the thread: pause the AI auto-reply here, exactly
+    // like the bot's own handoff does. Without this the run ended, the
+    // next customer message was no longer consumed by the flow, and the
+    // AI answered a conversation the flow had just escalated.
+    ai_autoreply_disabled: true,
     updated_at: new Date().toISOString(),
   };
+  // Surface the note in the inbox banner (conversations.ai_handoff_summary)
+  // instead of only in flow_run_events, where agents never look.
+  if (note) convUpdate.ai_handoff_summary = `🧭 Flow: ${note}`;
   if (cfg.assign_to) convUpdate.assigned_agent_id = cfg.assign_to;
   if (run.conversation_id) {
     await db
@@ -494,7 +505,7 @@ async function executeHandoff(
       .eq("id", run.conversation_id);
   }
   await logEvent(db, run.id, "handoff", node.node_key, {
-    note: cfg.note ?? null,
+    note,
     assigned_to: cfg.assign_to ?? null,
   });
   await endRun(db, run.id, "handed_off", "handoff_node");
@@ -1130,7 +1141,12 @@ async function handleReplyForActiveRun(
     if (run.conversation_id) {
       await db
         .from("conversations")
-        .update({ status: "pending", updated_at: new Date().toISOString() })
+        .update({
+          status: "pending",
+          // Same as executeHandoff: escalated to a human → AI stays quiet.
+          ai_autoreply_disabled: true,
+          updated_at: new Date().toISOString(),
+        })
         .eq("id", run.conversation_id);
     }
     await logEvent(db, run.id, "handoff", run.current_node_key, {

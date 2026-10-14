@@ -22,6 +22,12 @@ export const AI_PROVIDER_DEFAULT_MODEL: Record<AiProvider, string> = {
  */
 export const HANDOFF_SENTINEL = '[[HANDOFF]]'
 
+/**
+ * Shape of the qualification marker the model appends in auto-reply mode
+ * (parsed and stripped by `extractLeadBlocks` in generate.ts).
+ */
+export const LEAD_MARKER_EXAMPLE = '[[LEAD {"intent":"project","city":"Córdoba"}]]'
+
 /** Cap on generated reply length — keeps WhatsApp replies short and
  *  bounds token spend on the caller's own key. */
 export const MAX_OUTPUT_TOKENS = 1024
@@ -68,7 +74,8 @@ export function buildSystemPrompt(args: {
 
   if (mode === 'auto_reply') {
     parts.push(
-      `You are replying automatically with no human in the loop. If you cannot confidently and safely help — the customer explicitly asks for a human, is upset or complaining, or the request needs information you do not have — reply with exactly ${HANDOFF_SENTINEL} and nothing else. A human agent will then take over. Prefer handing off over guessing.`,
+      `You are replying automatically with no human in the loop. If you cannot confidently and safely help — the customer explicitly asks for a human, is upset or complaining, or the request needs information you do not have — reply with exactly ${HANDOFF_SENTINEL} and nothing else (except the lead line described below). A human agent will then take over. Prefer handing off over guessing.`,
+      `Lead capture: whenever the conversation so far reveals qualification data about the customer, end your output with ONE extra line of the form ${LEAD_MARKER_EXAMPLE} containing only the fields you actually know. Allowed keys: intent ("online" = wants to buy products online; "project" = wants an installation / home-automation project; "reseller" = architect, builder, electrician, installer or reseller who wants to work with the business), name, city, province, property_type, project_stage, products (array of strings), ecosystem, has_neutral ("si" | "no" | "no_sabe"), company_or_trade, budget, timeline, notes. Use valid JSON. That line is removed automatically before anything is sent, so never mention it, and add it after ${HANDOFF_SENTINEL} too when you hand off. Never invent values.`,
     )
   }
 

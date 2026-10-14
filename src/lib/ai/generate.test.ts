@@ -38,6 +38,29 @@ beforeEach(() => {
 })
 afterEach(() => vi.unstubAllGlobals())
 
+describe('parseGeneration — lead marker', () => {
+  it('extracts and strips a [[LEAD {...}]] block', () => {
+    const r = parseGeneration(
+      '¡Perfecto! Te paso opciones.\n[[LEAD {"intent":"online","city":"Rosario","products":["Foco WiFi"]}]]',
+    )
+    expect(r.text).toBe('¡Perfecto! Te paso opciones.')
+    expect(r.handoff).toBe(false)
+    expect(r.lead).toEqual({ intent: 'online', city: 'Rosario', products: ['Foco WiFi'] })
+  })
+
+  it('works together with the handoff sentinel', () => {
+    const r = parseGeneration('[[HANDOFF]]\n[[LEAD {"intent":"project","city":"Córdoba"}]]')
+    expect(r).toMatchObject({ text: '', handoff: true, lead: { intent: 'project', city: 'Córdoba' } })
+  })
+
+  it('never leaks a malformed or truncated marker to the customer', () => {
+    expect(parseGeneration('Hola [[LEAD {not json}]] chau').text).toBe('Hola  chau')
+    const cut = parseGeneration('Te ayudo con eso. [[LEAD {"intent":"onl')
+    expect(cut.text).toBe('Te ayudo con eso.')
+    expect(cut.lead).toBeUndefined()
+  })
+})
+
 describe('parseGeneration', () => {
   it('returns text with no handoff', () => {
     expect(parseGeneration('Hello there')).toEqual({

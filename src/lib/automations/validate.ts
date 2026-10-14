@@ -203,6 +203,23 @@ export function validateTriggerForActivation(
         message: 'reply ids cannot be empty strings',
       })
     }
+  } else if (triggerType === 'deal_stage_changed') {
+    // Both filters are optional (empty = any stage change), but a stage
+    // filter without its pipeline is a half-finished config.
+    const ids = cfg.stage_ids
+    if (ids != null && (!Array.isArray(ids) || ids.some((v) => !nonEmpty(v)))) {
+      issues.push({ path: 'trigger.stage_ids', message: 'stage ids must be non-empty strings' })
+    } else if (Array.isArray(ids) && ids.length > 0 && !nonEmpty(cfg.pipeline_id)) {
+      issues.push({ path: 'trigger.pipeline_id', message: 'pick the pipeline the stages belong to' })
+    }
+  } else if (triggerType === 'conversation_window_expiring') {
+    const m = Number(cfg.minutes_before)
+    if (!Number.isFinite(m) || m < 5 || m > 23 * 60) {
+      issues.push({
+        path: 'trigger.minutes_before',
+        message: 'minutes before the window closes must be between 5 and 1380',
+      })
+    }
   }
 
   return issues

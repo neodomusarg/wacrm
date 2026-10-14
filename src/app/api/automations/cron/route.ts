@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/automations/admin-client'
 import { resumePendingExecution } from '@/lib/automations/engine'
 import type { AutomationContext } from '@/lib/automations/engine'
+import { drainAutomationEvents, scanExpiringWindows } from '@/lib/automations/events'
 
 /**
  * Drain due `automation_pending_executions` rows. Meant to be hit
@@ -31,6 +32,29 @@ export async function GET(request: Request) {
   }
 
   const admin = supabaseAdmin()
+
+  // A row stuck in 'running' means the process died mid-resume (container
+  // restart / redeploy on Easypanel). Re-running it could double-send, so
+  // it is failed instead of retried — but no longer left 'running' forever.
+  const staleCutoff = new Date(Date.now() - 15 * 60_000).toISOString()
+  await admin
+    .from('automation_pending_executions')
+    .update({ status: 'failed' })
+    .eq('status', 'running')
+    .lt('claimed_at', staleCutoff)
+
+  // Database-originated triggers (migration 044): deal stage changes and
+  // conversation assignments queued by Postgres, then 24 h windows about
+  // to close. Each step is isolated so one failing doesn't block the rest.
+  const events = await drainAutomationEvents().catch((err) => {
+    console.error('[automations cron] event drain failed:', err)
+    return { processed: 0, failed: 0 }
+  })
+  const windowNudges = await scanExpiringWindows().catch((err) => {
+    console.error('[automations cron] window scan failed:', err)
+    return 0
+  })
+
   const { data: due, error } = await admin
     .from('automation_pending_executions')
     .select('*')
@@ -40,13 +64,15 @@ export async function GET(request: Request) {
     .limit(50)
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-  if (!due || due.length === 0) return NextResponse.json({ processed: 0 })
+  if (!due || due.length === 0) {
+    return NextResponse.json({ processed: 0, events, windowNudges })
+  }
 
   let processed = 0
   for (const row of due) {
     const { data: claim } = await admin
       .from('automation_pending_executions')
-      .update({ status: 'running' })
+      .update({ status: 'running', claimed_at: new Date().toISOString() })
       .eq('id', row.id)
       .eq('status', 'pending')
       .select('id')
@@ -70,5 +96,5 @@ export async function GET(request: Request) {
     processed++
   }
 
-  return NextResponse.json({ processed })
+  return NextResponse.json({ processed, events, windowNudges })
 }
